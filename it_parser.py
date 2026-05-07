@@ -33,7 +33,6 @@ class Tee:
         for f in self.files:
             f.flush()
 
-# Удаляем старый лог
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
 log_handle = open(LOG_FILE, "w", encoding="utf-8")
@@ -41,22 +40,15 @@ sys.stdout = Tee(sys.stdout, log_handle)
 sys.stderr = Tee(sys.stderr, log_handle)
 # ============================================================
 
-# ---------- СЕМАНТИЧЕСКОЕ ЯДРО ДЛЯ ИТ ----------
+# ---------- СЕМАНТИЧЕСКОЕ ЯДРО ----------
 KEYWORDS_ROOTS = [
-    # Разработка и сопровождение ПО
     'программн', 'разработк', 'доработк', 'внедрени', 'сопровожд', 'модернизац',
-    # Информационные системы
     'информационн', 'информац систем',
-    # Конкретные системы
     'erp', 'crm', 'scm', 'bpm', 'wms', 'биллинг',
-    # Инфраструктура
     'сервер', 'cloud', 'виртуализац', 'облачн', 'сетевое оборуд',
-    # Аналитика и AI
     'нейросет', 'искусственн', 'машинн', 'big data', 'аналитика данных',
     'распознаван', 'nlp', 'llm', 'gpt',
-    # Лицензии
     'лиценз', 'софт', 'программное обеспеч', 'поставк по',
-    # Аппаратное обеспечение (ИТ-специфичное)
     'планшет', 'ноутбук', 'рабоч станц', 'серверн обору',
 ]
 
@@ -68,7 +60,6 @@ BLACKLIST = [
     'строительно-монтажные', 'строительно-монтажных',
     'ремонт', 'кровля', 'фасад', 'павильон', 'сэндвич-панел',
     'кабель', 'провод', 'труб', 'бетон', 'кирпич', 'штукатурк',
-    # Только строительная модернизация (программную не трогаем)
     'модернизация электроосвещения', 'модернизация системы кондиционирования',
     'модернизация здания', 'модернизация горячего водоснабжения',
     'модернизация системы теплоснабжения', 'модернизация электрооборудования',
@@ -147,8 +138,13 @@ def send_telegram(text):
     data = {'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True}
     try:
         r = requests.post(url, data=data, timeout=15)
-        return r.ok
-    except:
+        result = r.json()
+        print(f"📤 Отправка в Telegram: статус {r.status_code}, ok={result.get('ok', False)}")
+        if not result.get('ok'):
+            print(f"   Ошибка: {result.get('description', 'неизвестно')}")
+        return result.get('ok', False)
+    except Exception as e:
+        print(f"❌ Ошибка отправки в Telegram: {e}")
         return False
 
 def get_page(page_num):
@@ -194,6 +190,24 @@ def parse_tenders(soup):
             'url': url,
         })
     return tenders
+
+def split_and_send(text, mention):
+    max_len = 4000
+    if len(text) <= max_len:
+        send_telegram(text)
+        return
+    parts = []
+    current = f"{mention}\n📋 <b>Новые ИТ-тендеры</b>\n\n"
+    for line in text.split('\n'):
+        if len(current + line + '\n') > max_len:
+            parts.append(current)
+            current = f"{mention}\n📋 <b>Новые ИТ-тендеры (продолжение)</b>\n\n"
+        current += line + '\n'
+    if current:
+        parts.append(current)
+    for part in parts:
+        send_telegram(part)
+        time.sleep(0.5)
 
 def main():
     try:
@@ -252,7 +266,9 @@ def main():
                         f"   🔗 <a href=\"{t['url']}\">Ссылка</a>\n\n")
             if len(all_new_tenders) > 20:
                 msg += f"... и еще {len(all_new_tenders)-20}\n\n"
-            send_telegram(msg)
+            
+            print(f"📤 Формируем сообщение для отправки...")
+            split_and_send(msg, mention)
             print(f"✅ Отправлено {len(all_new_tenders)} тендеров")
 
             for t in all_new_tenders:
