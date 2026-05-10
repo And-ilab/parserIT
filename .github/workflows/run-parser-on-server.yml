@@ -4,13 +4,14 @@
 # Needs: runner Online; folder C:\tender_it; git and python on PATH for the runner account.
 # Manual: Actions -> "Run tender parser on server" -> Run workflow.
 #
-# Cron examples (UTC): '0 * * * *' hourly; '30 */2 * * *' at :30 every 2 hours.
+# Schedule: twice daily — ~00:00 and ~12:00 Minsk (Belarus, UTC+3): 21:00 and 09:00 UTC.
 
 name: Run tender parser on server
 
 on:
   schedule:
-    - cron: '10,40 * * * *'
+    - cron: '0 21 * * *'
+    - cron: '0 9 * * *'
   workflow_dispatch:
 
 defaults:
