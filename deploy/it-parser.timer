@@ -1,0 +1,12 @@
+[Unit]
+Description=Run IT parser on a schedule
+
+[Timer]
+# Пример: каждые 30 минут после загрузки и сразу при старе таймера
+OnBootSec=2min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=it-parser.service
+
+[Install]
+WantedBy=timers.target

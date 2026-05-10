@@ -1,0 +1,17 @@
+[Unit]
+Description=IT tenders parser (icetrade.by -> Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/parserIT
+# Путь к файлу с TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID:
+EnvironmentFile=-/opt/parserIT/.env
+ExecStart=/usr/bin/python3 /opt/parserIT/it_parser.py
+# Если машина «засыпает», oneshot всё равно не разбудит её — нужен внешний cron
+# или отключение сна; этот unit гарантирует корректный запуск, когда пробуждение уже произошло.
+
+[Install]
+WantedBy=multi-user.target
