@@ -3,8 +3,10 @@
 # Как включить (один раз):
 # 1. На сервере установите «GitHub Actions self-hosted runner» для репозитория parserIT
 #    (Settings → Actions → Runners → New self-hosted runner → выберите Windows).
-# 2. Запустите `run.cmd` из папки runner — в списке раннеров появится «Idle».
-# 3. После этого каждый push в ветку main сам выполнит git pull в каталоге ниже.
+# 2. После `config.cmd` — служба или `run.cmd`; в GitHub → Runners статус Online.
+# 3. Права на C:\tender_it для службы (NT AUTHORITY\NETWORK SERVICE): на сервере от админа
+#    выполните deploy\grant-networkservice-repo-access.ps1 из клона репозитория.
+# 4. Каждый push в ветку main выполнит git pull в каталоге ниже.
 #
 # Ручной запуск: вкладка Actions → workflow «Sync server from Git» → Run workflow.
 #
