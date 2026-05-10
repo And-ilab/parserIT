@@ -28,10 +28,10 @@ if (-not $isAdmin) {
 
 Write-Host "Granting $Principal Modify (OI)(CI) on $RepoPath ..." -ForegroundColor Cyan
 
-$grantArg = "${Principal}:(OI)(CI)M"
-$p = Start-Process -FilePath $Icacls -ArgumentList @($RepoPath, '/grant', $grantArg) -Wait -PassThru -NoNewWindow
-if ($p.ExitCode -ne 0) {
-    Write-Error "icacls failed with exit code $($p.ExitCode)"
+# Single argument for /grant (name contains spaces; Start-Process -ArgumentList can break it).
+& $Icacls $RepoPath /grant "${Principal}:(OI)(CI)M"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "icacls failed with exit code $LASTEXITCODE"
 }
 
 Write-Host 'Done. Expect a line containing NETWORK SERVICE below:' -ForegroundColor Green
