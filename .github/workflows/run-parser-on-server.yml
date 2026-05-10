@@ -1,0 +1,48 @@
+# Run it_parser.py on the Windows self-hosted runner on a schedule (cron is UTC).
+# Does not use Windows Task Scheduler.
+#
+# Needs: runner Online; folder C:\tender_it; git and python on PATH for the runner account.
+# Manual: Actions -> "Run tender parser on server" -> Run workflow.
+#
+# Cron examples (UTC): '0 * * * *' hourly; '30 */2 * * *' at :30 every 2 hours.
+
+name: Run tender parser on server
+
+on:
+  schedule:
+    - cron: '10,40 * * * *'
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: powershell
+
+env:
+  TENDER_IT_DIR: 'C:\tender_it'
+
+jobs:
+  parser:
+    runs-on: self-hosted
+    steps:
+      - name: Git pull main
+        run: |
+          if (-not (Test-Path -LiteralPath $env:TENDER_IT_DIR)) {
+            Write-Error "Directory missing: $($env:TENDER_IT_DIR)"
+          }
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          git fetch origin
+          git checkout main
+          git pull origin main
+          git log -1 --oneline
+
+      - name: pip install
+        run: |
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          if (Test-Path -LiteralPath 'requirements.txt') {
+            python -m pip install -q -r requirements.txt
+          }
+
+      - name: Run it_parser.py
+        run: |
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          python it_parser.py
