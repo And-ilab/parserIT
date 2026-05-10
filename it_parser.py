@@ -39,8 +39,15 @@ from datetime import datetime, timedelta
 
 # ============================================================
 # НАСТРОЙКИ
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN", "").strip()
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID", "").strip()
+# Сначала переменные окружения (когда перейдёте на них), иначе — значения по умолчанию как раньше.
+_DEFAULT_BOT_TOKEN = "8677357886:AAHWAq-EfNxlcR7XQaz8es5eGnXriUNSfGk"
+_DEFAULT_CHAT_ID = "-1001872277668"
+BOT_TOKEN = (
+    os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("BOT_TOKEN") or _DEFAULT_BOT_TOKEN
+).strip()
+CHAT_ID = (
+    os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID") or _DEFAULT_CHAT_ID
+).strip()
 DAYS_BACK = int(os.environ.get("DAYS_BACK", "30"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "120"))
 TELEGRAM_SEND_RETRIES = int(os.environ.get("TELEGRAM_SEND_RETRIES", "6"))
@@ -328,13 +335,6 @@ def parse_tenders(soup):
 
 def main():
     try:
-        if not BOT_TOKEN or not CHAT_ID:
-            print(
-                "❌ Не заданы TELEGRAM_BOT_TOKEN и/или TELEGRAM_CHAT_ID (или BOT_TOKEN / CHAT_ID). "
-                "См. env.example — экспортируйте переменные или используйте EnvironmentFile в systemd."
-            )
-            return
-
         mention = "@AndrPon"
         print("🚀 Парсер ИТ-тендеров запущен")
         print(f"📅 Диапазон: {created_from} - {created_to} (последние {DAYS_BACK} дней)")

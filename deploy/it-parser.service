@@ -7,8 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/opt/parserIT
-# Путь к файлу с TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID:
-EnvironmentFile=-/opt/parserIT/.env
+# Когда вынесете токен в .env — раскомментируйте и укажите путь:
+# EnvironmentFile=-/opt/parserIT/.env
 ExecStart=/usr/bin/python3 /opt/parserIT/it_parser.py
 # Если машина «засыпает», oneshot всё равно не разбудит её — нужен внешний cron
 # или отключение сна; этот unit гарантирует корректный запуск, когда пробуждение уже произошло.
