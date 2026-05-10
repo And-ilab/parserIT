@@ -20,11 +20,20 @@ powercfg /change disk-timeout-ac 0
 powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 
+# Hybrid sleep off (SUB_SLEEP / HYBRIDSLEEP) — on VM usually not needed and can confuse diagnostics
+$SUB_SLEEP = '238c9fa8-0aad-41ed-83f4-97be242c8f20'
+$HYBRIDSLEEP = '94ac6d29-73ce-41a6-809f-6363ba21b47e'
+powercfg /setacvalueindex SCHEME_CURRENT $SUB_SLEEP $HYBRIDSLEEP 0
+powercfg /setdcvalueindex SCHEME_CURRENT $SUB_SLEEP $HYBRIDSLEEP 0
+powercfg /setactive SCHEME_CURRENT
+
 # DC (laptop) profile if present
 powercfg /change monitor-timeout-dc 0
 powercfg /change disk-timeout-dc 0
 powercfg /change standby-timeout-dc 0
 powercfg /change hibernate-timeout-dc 0
+
+powercfg /setactive SCHEME_CURRENT
 
 Write-Host 'Current active scheme:' -ForegroundColor Green
 powercfg /getactivescheme
