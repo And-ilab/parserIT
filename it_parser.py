@@ -20,6 +20,7 @@ MAX_PAGES = 120
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SENT_IDS_FILE = os.path.join(SCRIPT_DIR, "sent_it_ids.txt")
 LOG_FILE = os.path.join(SCRIPT_DIR, "it_parser_log.txt")
+SEND_SUMMARY_FILE = os.path.join(SCRIPT_DIR, "send_summary.log")
 
 # Перенаправляем вывод в файл
 class Tee:
@@ -94,11 +95,15 @@ def load_sent_ids():
     if not os.path.exists(SENT_IDS_FILE):
         return set()
     with open(SENT_IDS_FILE, 'r', encoding='utf-8') as f:
-        return set(line.strip() for line in f if line.strip())
+        return set(line.strip() for line in f if line.strip() and not line.startswith('<'))
 
 def save_sent_id(tender_id):
     with open(SENT_IDS_FILE, 'a', encoding='utf-8') as f:
         f.write(f"{tender_id}\n")
+
+def log_send_summary(count, ok):
+    with open(SEND_SUMMARY_FILE, 'a', encoding='utf-8') as f:
+        f.write(f"{datetime.now().isoformat()}, тендеров: {count}, ok: {ok}\n")
 
 def extract_tender_id(url):
     match = re.search(r'/view/(\d+)', url)
@@ -134,6 +139,9 @@ def format_price(price_str):
         return f"{num_part} {currency}"
 
 def send_telegram(text):
+    if not text or len(text.strip()) == 0:
+        print("❌ Пустое сообщение, отправка отменена")
+        return False
     url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
     data = {'chat_id': CHAT_ID, 'text': text, 'parse_mode': 'HTML', 'disable_web_page_preview': True}
     try:
@@ -147,16 +155,50 @@ def send_telegram(text):
         print(f"❌ Ошибка отправки в Telegram: {e}")
         return False
 
-def get_page(page_num):
+def split_and_send(text):
+    max_len = 4000
+    if len(text) <= max_len:
+        return send_telegram(text)
+    
+    print(f"📦 Сообщение слишком длинное ({len(text)} символов), разбиваем на части...")
+    parts = []
+    current = ""
+    for line in text.split('\n'):
+        if len(current + line + '\n') > max_len:
+            parts.append(current)
+            current = ""
+        current += line + '\n'
+    if current:
+        parts.append(current)
+    
+    all_ok = True
+    for i, part in enumerate(parts, 1):
+        print(f"  Отправка части {i}/{len(parts)} ({len(part)} символов)")
+        ok = send_telegram(part)
+        all_ok = all_ok and ok
+        time.sleep(0.5)
+    return all_ok
+
+def get_page(page_num, retries=2):
+    """Загружает страницу с повторными попытками и таймаутами"""
     params = {**BASE_PARAMS, 'p': page_num}
-    try:
-        r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=20, verify=False)
-        r.raise_for_status()
-        print(f"  стр. {page_num} загружена")
-        return BeautifulSoup(r.text, 'html.parser')
-    except Exception as e:
-        print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
-        return None
+    for attempt in range(retries + 1):
+        try:
+            # таймаут: (connect, read) секунд
+            r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=(10, 30), verify=False)
+            r.raise_for_status()
+            print(f"  стр. {page_num} загружена")
+            return BeautifulSoup(r.text, 'html.parser')
+        except requests.exceptions.Timeout:
+            print(f"  ⏰ Таймаут загрузки страницы {page_num}, попытка {attempt+1}/{retries+1}")
+            if attempt == retries:
+                print(f"  ❌ Страница {page_num} не загружена после {retries+1} попыток, пропускаем")
+                return None
+            time.sleep(5)
+        except Exception as e:
+            print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
+            return None
+    return None
 
 def parse_tenders(soup):
     tenders = []
@@ -191,24 +233,6 @@ def parse_tenders(soup):
         })
     return tenders
 
-def split_and_send(text, mention):
-    max_len = 4000
-    if len(text) <= max_len:
-        send_telegram(text)
-        return
-    parts = []
-    current = f"{mention}\n📋 <b>Новые ИТ-тендеры</b>\n\n"
-    for line in text.split('\n'):
-        if len(current + line + '\n') > max_len:
-            parts.append(current)
-            current = f"{mention}\n📋 <b>Новые ИТ-тендеры (продолжение)</b>\n\n"
-        current += line + '\n'
-    if current:
-        parts.append(current)
-    for part in parts:
-        send_telegram(part)
-        time.sleep(0.5)
-
 def main():
     try:
         mention = "@AndrPon"
@@ -226,7 +250,7 @@ def main():
             print(f"\n--- Страница {page} ---")
             soup = get_page(page)
             if not soup:
-                print("❌ ошибка загрузки, прерываем")
+                print("❌ Ошибка загрузки страницы, прерываем")
                 break
 
             tenders = parse_tenders(soup)
@@ -252,7 +276,8 @@ def main():
 
         if not all_new_tenders:
             msg = f"{mention}\n📭 За последние {DAYS_BACK} дней новых ИТ-тендеров не найдено."
-            send_telegram(msg)
+            ok = send_telegram(msg)
+            log_send_summary(0, ok)
             print("📭 Сообщение отправлено (тендеров нет)")
         else:
             all_new_tenders.sort(key=lambda x: x.get('date_end', ''), reverse=False)
@@ -268,13 +293,15 @@ def main():
                 msg += f"... и еще {len(all_new_tenders)-20}\n\n"
             
             print(f"📤 Формируем сообщение для отправки...")
-            split_and_send(msg, mention)
-            print(f"✅ Отправлено {len(all_new_tenders)} тендеров")
+            ok = split_and_send(msg)
+            log_send_summary(len(all_new_tenders), ok)
+            print(f"✅ Отправлено {len(all_new_tenders)} тендеров, ok={ok}")
 
-            for t in all_new_tenders:
-                tender_id = extract_tender_id(t['url'])
-                if tender_id:
-                    save_sent_id(tender_id)
+            if ok:
+                for t in all_new_tenders:
+                    tender_id = extract_tender_id(t['url'])
+                    if tender_id:
+                        save_sent_id(tender_id)
 
     except Exception as e:
         print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
