@@ -1,0 +1,60 @@
+# Синхронизация клона на Windows-сервере с GitHub без ручного захода на машину.
+#
+# Как включить (один раз):
+# 1. На сервере установите «GitHub Actions self-hosted runner» для репозитория parserIT
+#    (Settings → Actions → Runners → New self-hosted runner → выберите Windows).
+# 2. Запустите `run.cmd` из папки runner — в списке раннеров появится «Idle».
+# 3. После этого каждый push в ветку main сам выполнит git pull в каталоге ниже.
+#
+# Ручной запуск: вкладка Actions → workflow «Sync server from Git» → Run workflow.
+#
+# Каталог клона можно переопределить при ручном запуске (input) или правкой env ниже.
+
+name: Sync server from Git
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      workdir:
+        description: Каталог git-клона на сервере (Windows)
+        required: false
+        default: 'C:\tender_it'
+
+env:
+  # Значение по умолчанию для push; при workflow_dispatch подставится input.
+  DEFAULT_WORKDIR: 'C:\tender_it'
+
+jobs:
+  pull-on-self-hosted:
+    name: git pull on Windows host
+    runs-on: self-hosted
+    steps:
+      - name: Resolve directory
+        shell: powershell
+        run: |
+          $d = '${{ github.event.inputs.workdir }}'
+          if ([string]::IsNullOrWhiteSpace($d)) { $d = $env:DEFAULT_WORKDIR }
+          echo "WORKDIR=$d" >> $env:GITHUB_ENV
+
+      - name: Git pull origin main
+        shell: powershell
+        run: |
+          if (-not (Test-Path -LiteralPath $env:WORKDIR)) {
+            Write-Error "Каталог не найден: $env:WORKDIR. Клонируйте репозиторий или поправьте путь."
+            exit 1
+          }
+          Set-Location -LiteralPath $env:WORKDIR
+          git fetch origin
+          git checkout main
+          git pull origin main
+          git log -1 --oneline
+
+      - name: pip install (optional)
+        shell: powershell
+        run: |
+          Set-Location -LiteralPath $env:WORKDIR
+          if (Test-Path -LiteralPath "requirements.txt") {
+            python -m pip install -q -r requirements.txt
+          }
