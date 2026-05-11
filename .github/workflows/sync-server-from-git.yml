@@ -12,6 +12,9 @@
 #
 # Каталог клона можно переопределить при ручном запуске (input) или правкой env ниже.
 
+# If git pull fails quickly: private repo + runner service has no credentials.
+# Add Actions secret GH_PULL_PAT (read-only PAT for this repo).
+
 name: Sync server from Git
 
 on:
@@ -41,13 +44,19 @@ jobs:
           echo "WORKDIR=$d" >> $env:GITHUB_ENV
 
       - name: Git pull origin main
+        env:
+          GH_PULL_PAT: ${{ secrets.GH_PULL_PAT }}
         shell: powershell
         run: |
           if (-not (Test-Path -LiteralPath $env:WORKDIR)) {
-            Write-Error "Каталог не найден: $env:WORKDIR. Клонируйте репозиторий или поправьте путь."
+            Write-Error "Directory not found: $($env:WORKDIR). Clone the repo or fix path."
             exit 1
           }
           Set-Location -LiteralPath $env:WORKDIR
+          if ($env:GH_PULL_PAT -and $env:GH_PULL_PAT.Trim().Length -gt 0) {
+            $u = "https://x-access-token:$($env:GH_PULL_PAT)@github.com/${{ github.repository }}.git"
+            git remote set-url origin $u
+          }
           git fetch origin
           git checkout main
           git pull origin main

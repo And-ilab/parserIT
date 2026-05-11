@@ -5,6 +5,10 @@
 # Manual: Actions -> "Run tender parser on server" -> Run workflow.
 #
 # Schedule: twice daily — ~00:00 and ~12:00 Minsk (Belarus, UTC+3): 21:00 and 09:00 UTC.
+#
+# If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
+# service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained
+# PAT, read-only on this repo) — workflow will set origin URL before pull.
 
 name: Run tender parser on server
 
@@ -25,12 +29,24 @@ jobs:
   parser:
     runs-on: self-hosted
     steps:
+      - name: Debug identity and tools
+        run: |
+          whoami
+          (Get-Command git -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+          (Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+
       - name: Git pull main
+        env:
+          GH_PULL_PAT: ${{ secrets.GH_PULL_PAT }}
         run: |
           if (-not (Test-Path -LiteralPath $env:TENDER_IT_DIR)) {
             Write-Error "Directory missing: $($env:TENDER_IT_DIR)"
           }
           Set-Location -LiteralPath $env:TENDER_IT_DIR
+          if ($env:GH_PULL_PAT -and $env:GH_PULL_PAT.Trim().Length -gt 0) {
+            $u = "https://x-access-token:$($env:GH_PULL_PAT)@github.com/${{ github.repository }}.git"
+            git remote set-url origin $u
+          }
           git fetch origin
           git checkout main
           git pull origin main
@@ -53,5 +69,6 @@ jobs:
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          $line = ('{0:u} run-parser-on-server job finished (workflow_status={1})' -f [datetime]::UtcNow, '${{ job.status }}')
+          $rid = '${{ github.run_id }}'
+          $line = ('{0:u} run-parser-on-server finished run_id={1}' -f [datetime]::UtcNow, $rid)
           Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule.log') -Value $line
