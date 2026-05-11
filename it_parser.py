@@ -24,9 +24,9 @@
 Если это не VPS, а ПК/ноутбук с suspend — планировщик не сработает, пока машина спит:
 внешний триггер (GitHub Actions, cron-job.org, Windmill) надёжнее, чем локальный cron.
 
-5) Рубрикатор отраслей icetrade.by (сильно режет «мусор» до фильтра по словам):
-   - Форма поиска: GET на /search/auctions. Отрасли попадают в ОДНО скрытое поле: <input name="industries" type="hidden" value="...">
-     (его заполняет модальное окно после «Готово»).
+5) Рубрикатор отраслей icetrade.by:
+   - В запрос поиска добавляется поле industries (скрытый input на форме). По умолчанию уже подставлена строка из вашего рабочего URL
+     (Информационные технологии + Компьютеры и подрубрики). Отключить: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off.
    - Скопируйте icetrade_industry_params.example.json → icetrade_industry_params.json рядом с it_parser.py.
    - На сайте: «Расширенный поиск» (чтобы были видны отрасли) → «Отрасли» / «Выбрать» → отметьте
      «Информационные технологии», «Компьютеры / оборудование» (+ подпункты по желанию), при необходимости «Связь / коммуникации»
@@ -131,15 +131,37 @@ def load_icetrade_extra_params():
 
 
 def icetrade_search_extra_params():
-    """JSON-файл + опционально ICETRADE_INDUSTRIES (перекрывает industries из файла)."""
+    """
+    JSON-файл, затем ICETRADE_INDUSTRIES (перекрывает файл), иначе industries по умолчанию
+    (рубрики ИТ + компьютеры с icetrade; отключить: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off).
+    """
     global _ICETRADE_INDUSTRIES_LOGGED
+    # Снято с рабочего URL пользователя (icetrade.by/search/auctions?...&industries=...)
+    default_ind = "16/17/18/105.106-115/116.117-122/179/370.371-387"
     extra = dict(load_icetrade_extra_params())
-    ind = os.environ.get("ICETRADE_INDUSTRIES", "").strip()
-    if ind:
-        extra["industries"] = ind
-        if not _ICETRADE_INDUSTRIES_LOGGED:
-            print("  📎 icetrade: используется ICETRADE_INDUSTRIES из окружения")
-            _ICETRADE_INDUSTRIES_LOGGED = True
+
+    ind_env = os.environ.get("ICETRADE_INDUSTRIES")
+    if ind_env is not None:
+        s = ind_env.strip()
+        if s.lower() in ("", "none", "off", "0"):
+            extra.pop("industries", None)
+            if not _ICETRADE_INDUSTRIES_LOGGED:
+                print("  📎 icetrade: industries отключены (ICETRADE_INDUSTRIES пусто/off)")
+                _ICETRADE_INDUSTRIES_LOGGED = True
+        else:
+            extra["industries"] = s
+            if not _ICETRADE_INDUSTRIES_LOGGED:
+                print("  📎 icetrade: industries из переменной ICETRADE_INDUSTRIES")
+                _ICETRADE_INDUSTRIES_LOGGED = True
+    elif "industries" not in extra:
+        if os.environ.get("ICETRADE_DISABLE_DEFAULT_INDUSTRY", "").lower() not in ("1", "true", "yes"):
+            extra["industries"] = default_ind
+            if not _ICETRADE_INDUSTRIES_LOGGED:
+                print(
+                    "  📎 icetrade: industries по умолчанию (ИТ + компьютеры); "
+                    "отключить: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off"
+                )
+                _ICETRADE_INDUSTRIES_LOGGED = True
     return extra
 
 
@@ -388,12 +410,19 @@ def get_date_range(days_back=DAYS_BACK):
 created_from, created_to = get_date_range()
 
 BASE_PARAMS = {
-    'search': 'Найти',
+    'search_text': '',
+    'sbm': '1',
     'zakup_type[1]': '1', 'zakup_type[2]': '1',
+    'auc_num': '',
+    'okrb': '',
+    'company_title': '',
     'establishment': '0',
-    't[Trade]': '1', 't[eTrade]': '1', 't[Request]': '1',
-    't[singleSource]': '1', 't[Auction]': '1', 't[Other]': '1',
-    't[contractingTrades]': '1', 't[socialOrder]': '1', 't[negotiations]': '1',
+    'period': '',
+    'request_end_from': '',
+    'request_end_to': '',
+    't[Trade]': '1', 't[eTrade]': '1', 't[socialOrder]': '1',
+    't[singleSource]': '1', 't[Auction]': '1', 't[Request]': '1',
+    't[contractingTrades]': '1', 't[negotiations]': '1', 't[Other]': '1',
     'r[1]': '1', 'r[2]': '2', 'r[7]': '7',
     'r[3]': '3', 'r[4]': '4', 'r[6]': '6', 'r[5]': '5',
     'sort': 'num:desc', 'onPage': '20',

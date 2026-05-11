@@ -1,3 +1,4 @@
 {
-  "_README": "Скопируйте файл в icetrade_industry_params.json. Добавьте пару industries со строкой из атрибута value у input[name=industries] на icetrade.by после выбора отраслей и кнопки Готово (F12 → Elements). Либо задайте только переменную окружения ICETRADE_INDUSTRIES с этой же строкой."
+  "_README": "Опционально: переопределить industries. По умолчанию парсер уже подставляет ту же строку, что в вашем URL icetrade. Чтобы отключить фильтр: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off.",
+  "industries": "16/17/18/105.106-115/116.117-122/179/370.371-387"
 }
