@@ -9,6 +9,8 @@
 # If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
 # service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained
 # PAT, read-only on this repo) — workflow will set origin URL before pull.
+#
+# "dubious ownership": Administrators own C:\tender_it but git runs as NETWORK SERVICE — each git uses -c safe.directory=...
 
 name: Run tender parser on server
 
@@ -43,14 +45,16 @@ jobs:
             Write-Error "Directory missing: $($env:TENDER_IT_DIR)"
           }
           Set-Location -LiteralPath $env:TENDER_IT_DIR
+          $sd = (Get-Location).Path
+          $opt = "safe.directory=$sd"
           if ($env:GH_PULL_PAT -and $env:GH_PULL_PAT.Trim().Length -gt 0) {
             $u = "https://x-access-token:$($env:GH_PULL_PAT)@github.com/${{ github.repository }}.git"
-            git remote set-url origin $u
+            git -c $opt remote set-url origin $u
           }
-          git fetch origin
-          git checkout main
-          git pull origin main
-          git log -1 --oneline
+          git -c $opt fetch origin
+          git -c $opt checkout main
+          git -c $opt pull origin main
+          git -c $opt log -1 --oneline
 
       - name: pip install
         run: |
