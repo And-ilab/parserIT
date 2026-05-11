@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.env
+# Локальные параметры отраслей icetrade (см. icetrade_industry_params.example.json)
+icetrade_industry_params.json

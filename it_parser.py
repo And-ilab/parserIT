@@ -23,6 +23,16 @@
 
 Если это не VPS, а ПК/ноутбук с suspend — планировщик не сработает, пока машина спит:
 внешний триггер (GitHub Actions, cron-job.org, Windmill) надёжнее, чем локальный cron.
+
+5) Рубрикатор отраслей на icetrade.by (сильно режет «мусор» до фильтра по словам):
+   - Скопируйте icetrade_industry_params.example.json → icetrade_industry_params.json рядом с it_parser.py.
+   - На сайте: Поиск закупок → «Отрасли» / «Выбрать» → отметьте в первую очередь «Информационные технологии»
+     и «Компьютеры / оборудование» (раскройте + и при необходимости отметьте подпункты: ПО, хостинг,
+     системная интеграция, компьютерные сети и т.д.); при желании добавьте «Связь / коммуникации».
+   - Нажмите «Готово», затем «Найти».
+   - Chrome F12 → Network → запрос к search/auctions → Payload (или Query String) → все поля,
+     относящиеся к отраслям, перенесите в JSON в виде пар ключ: значение (см. icetrade_industry_params.example.json).
+   - Путь к файлу можно задать переменной ICETRADE_PARAMS_JSON.
 """
 import requests
 import urllib3
@@ -35,6 +45,7 @@ import time
 import random
 import re
 import os
+import json
 from datetime import datetime, timedelta
 
 
@@ -73,6 +84,45 @@ HEADER_RESERVE = 280
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SENT_IDS_FILE = os.path.join(SCRIPT_DIR, "sent_it_ids.txt")
 LOG_FILE = os.path.join(SCRIPT_DIR, "it_parser_log.txt")
+
+_ICETRADE_EXTRA_PARAMS_CACHE = None
+
+
+def load_icetrade_extra_params():
+    """
+    Доп. POST/GET-параметры поиска (отрасли из рубрикатора). Файл: icetrade_industry_params.json
+    или путь в ICETRADE_PARAMS_JSON. Ключи, начинающиеся с «_», пропускаются.
+    """
+    global _ICETRADE_EXTRA_PARAMS_CACHE
+    if _ICETRADE_EXTRA_PARAMS_CACHE is not None:
+        return _ICETRADE_EXTRA_PARAMS_CACHE
+    path = os.environ.get("ICETRADE_PARAMS_JSON", os.path.join(SCRIPT_DIR, "icetrade_industry_params.json"))
+    out = {}
+    if not os.path.isfile(path):
+        _ICETRADE_EXTRA_PARAMS_CACHE = out
+        return out
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception as e:
+        print(f"  ⚠️ Не удалось прочитать {path}: {e}")
+        _ICETRADE_EXTRA_PARAMS_CACHE = out
+        return out
+    if not isinstance(raw, dict):
+        _ICETRADE_EXTRA_PARAMS_CACHE = out
+        return out
+    for k, v in raw.items():
+        if not isinstance(k, str) or k.startswith("_"):
+            continue
+        if isinstance(v, (list, tuple)):
+            out[k] = [str(x) for x in v]
+        elif v is not None:
+            out[k] = str(v)
+    if out:
+        print(f"  📎 icetrade: из {path} добавлено {len(out)} полей фильтра отраслей")
+    _ICETRADE_EXTRA_PARAMS_CACHE = out
+    return out
+
 
 # Перенаправляем вывод в файл
 class Tee:
@@ -486,7 +536,7 @@ def build_telegram_chunks(mention, days_back, all_new_tenders):
     return out
 
 def get_page(page_num):
-    params = {**BASE_PARAMS, 'p': page_num}
+    params = {**BASE_PARAMS, **load_icetrade_extra_params(), 'p': page_num}
     try:
         r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=20, verify=False)
         r.raise_for_status()
