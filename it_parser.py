@@ -24,15 +24,19 @@
 Если это не VPS, а ПК/ноутбук с suspend — планировщик не сработает, пока машина спит:
 внешний триггер (GitHub Actions, cron-job.org, Windmill) надёжнее, чем локальный cron.
 
-5) Рубрикатор отраслей на icetrade.by (сильно режет «мусор» до фильтра по словам):
+5) Рубрикатор отраслей icetrade.by (сильно режет «мусор» до фильтра по словам):
+   - Форма поиска: GET на /search/auctions. Отрасли попадают в ОДНО скрытое поле: <input name="industries" type="hidden" value="...">
+     (его заполняет модальное окно после «Готово»).
    - Скопируйте icetrade_industry_params.example.json → icetrade_industry_params.json рядом с it_parser.py.
-   - На сайте: Поиск закупок → «Отрасли» / «Выбрать» → отметьте в первую очередь «Информационные технологии»
-     и «Компьютеры / оборудование» (раскройте + и при необходимости отметьте подпункты: ПО, хостинг,
-     системная интеграция, компьютерные сети и т.д.); при желании добавьте «Связь / коммуникации».
-   - Нажмите «Готово», затем «Найти».
-   - Chrome F12 → Network → запрос к search/auctions → Payload (или Query String) → все поля,
-     относящиеся к отраслям, перенесите в JSON в виде пар ключ: значение (см. icetrade_industry_params.example.json).
-   - Путь к файлу можно задать переменной ICETRADE_PARAMS_JSON.
+   - На сайте: «Расширенный поиск» (чтобы были видны отрасли) → «Отрасли» / «Выбрать» → отметьте
+     «Информационные технологии», «Компьютеры / оборудование» (+ подпункты по желанию), при необходимости «Связь / коммуникации»
+     → «Готово» (без этого value не обновится).
+   - Скопировать value: Chrome F12 → Elements (Инспектор) → Ctrl+F industries → строка
+     <input name="industries" type="hidden" value="СЮДА_ДЛИННАЯ_СТРОКА"/> — скопируйте только содержимое value в JSON:
+     "industries": "вставьте_сюда"
+     Либо задайте то же в переменной окружения ICETRADE_INDUSTRIES (удобно на сервере без файла).
+   - Альтернатива: после «Найти» скопировать из адресной строки параметр industries=... из полного URL.
+   - Путь к JSON: переменная ICETRADE_PARAMS_JSON.
 """
 import requests
 import urllib3
@@ -86,12 +90,14 @@ SENT_IDS_FILE = os.path.join(SCRIPT_DIR, "sent_it_ids.txt")
 LOG_FILE = os.path.join(SCRIPT_DIR, "it_parser_log.txt")
 
 _ICETRADE_EXTRA_PARAMS_CACHE = None
+_ICETRADE_INDUSTRIES_LOGGED = False
 
 
 def load_icetrade_extra_params():
     """
-    Доп. POST/GET-параметры поиска (отрасли из рубрикатора). Файл: icetrade_industry_params.json
-    или путь в ICETRADE_PARAMS_JSON. Ключи, начинающиеся с «_», пропускаются.
+    Доп. GET-параметры поиска. Для рубрикатора icetrade — поле ``industries`` (скрытый input).
+    Файл: icetrade_industry_params.json или путь в ICETRADE_PARAMS_JSON. Ключи, начинающиеся с «_», пропускаются.
+    Пустые строки в значениях не добавляются в запрос.
     """
     global _ICETRADE_EXTRA_PARAMS_CACHE
     if _ICETRADE_EXTRA_PARAMS_CACHE is not None:
@@ -116,12 +122,25 @@ def load_icetrade_extra_params():
             continue
         if isinstance(v, (list, tuple)):
             out[k] = [str(x) for x in v]
-        elif v is not None:
+        elif v is not None and str(v).strip() != "":
             out[k] = str(v)
     if out:
         print(f"  📎 icetrade: из {path} добавлено {len(out)} полей фильтра отраслей")
     _ICETRADE_EXTRA_PARAMS_CACHE = out
     return out
+
+
+def icetrade_search_extra_params():
+    """JSON-файл + опционально ICETRADE_INDUSTRIES (перекрывает industries из файла)."""
+    global _ICETRADE_INDUSTRIES_LOGGED
+    extra = dict(load_icetrade_extra_params())
+    ind = os.environ.get("ICETRADE_INDUSTRIES", "").strip()
+    if ind:
+        extra["industries"] = ind
+        if not _ICETRADE_INDUSTRIES_LOGGED:
+            print("  📎 icetrade: используется ICETRADE_INDUSTRIES из окружения")
+            _ICETRADE_INDUSTRIES_LOGGED = True
+    return extra
 
 
 # Перенаправляем вывод в файл
@@ -536,7 +555,7 @@ def build_telegram_chunks(mention, days_back, all_new_tenders):
     return out
 
 def get_page(page_num):
-    params = {**BASE_PARAMS, **load_icetrade_extra_params(), 'p': page_num}
+    params = {**BASE_PARAMS, **icetrade_search_extra_params(), 'p': page_num}
     try:
         r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=20, verify=False)
         r.raise_for_status()
