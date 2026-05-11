@@ -47,3 +47,11 @@ jobs:
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           python it_parser.py
+
+      - name: Log schedule completion (UTC) on server
+        if: always()
+        run: |
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          $line = ('{0:u} run-parser-on-server job finished (workflow_status={1})' -f [datetime]::UtcNow, '${{ job.status }}')
+          Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule.log') -Value $line
