@@ -37,6 +37,21 @@ import re
 import os
 from datetime import datetime, timedelta
 
+
+def _configure_stdio_utf8_windows():
+    """NETWORK SERVICE + cp1251 breaks print() with emoji; Telegram/HTML stays unchanged."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, AttributeError, ValueError):
+                pass
+
+
+_configure_stdio_utf8_windows()
+
 # ============================================================
 # НАСТРОЙКИ
 # Сначала переменные окружения (когда перейдёте на них), иначе — значения по умолчанию как раньше.
@@ -74,7 +89,7 @@ class Tee:
 # Удаляем старый лог
 if os.path.exists(LOG_FILE):
     os.remove(LOG_FILE)
-log_handle = open(LOG_FILE, "w", encoding="utf-8")
+log_handle = open(LOG_FILE, "w", encoding="utf-8", errors="replace")
 sys.stdout = Tee(sys.stdout, log_handle)
 sys.stderr = Tee(sys.stderr, log_handle)
 # ============================================================
