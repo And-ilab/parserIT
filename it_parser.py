@@ -22,7 +22,7 @@
    - tail -n 80 /opt/parserIT/it_parser_log.txt   (путь поправьте)
 
 Если это не VPS, а ПК/ноутбук с suspend — планировщик не сработает, пока машина спит:
-внешний триггер (GitHub Actions, cron-job.org, Windmill) надёжнее, чем локальный cron.
+внешний триггер (GitHub Actions, cron-job.org и т.п.) надёжнее, чем локальный cron.
 
 5) Рубрикатор отраслей icetrade.by:
    - В запрос поиска добавляется поле industries (скрытый input на форме). По умолчанию уже подставлена строка из вашего рабочего URL
@@ -37,9 +37,6 @@
      Либо задайте то же в переменной окружения ICETRADE_INDUSTRIES (удобно на сервере без файла).
    - Альтернатива: после «Найти» скопировать из адресной строки параметр industries=... из полного URL.
    - Путь к JSON: переменная ICETRADE_PARAMS_JSON.
-
-6) Windmill (шаг флоу): для облака задайте WINDMILL_USE_WMILL_STATE=1 — ID отправленных тендеров хранятся в state скрипта.
-   TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID — через Variables/Secrets workspace. Подробности: docs/windmill_it_scan.md.
 """
 import requests
 import urllib3
@@ -95,14 +92,6 @@ LOG_FILE = os.path.join(SCRIPT_DIR, "it_parser_log.txt")
 
 _ICETRADE_EXTRA_PARAMS_CACHE = None
 _ICETRADE_INDUSTRIES_LOGGED = False
-
-
-def use_wmill_state_for_sent_ids() -> bool:
-    """Хранилище ID в Windmill persistent state через wmill.* (требует WINDMILL_USE_WMILL_STATE=1)."""
-    return os.environ.get("WINDMILL_USE_WMILL_STATE", "").lower() in ("1", "true", "yes", "on")
-
-
-WMILL_SENT_IDS_KEY = os.environ.get("WMILL_SENT_IDS_KEY", "sent_it_ids")
 
 
 def load_icetrade_extra_params():
@@ -469,18 +458,6 @@ BASE_PARAMS = {
 }
 
 def load_sent_ids():
-    if use_wmill_state_for_sent_ids():
-        try:
-            import wmill
-
-            s = wmill.get_state()
-            if isinstance(s, dict):
-                lst = s.get(WMILL_SENT_IDS_KEY)
-                if isinstance(lst, list):
-                    return set(str(x).strip() for x in lst if str(x).strip())
-        except Exception as e:
-            print(f"  ⚠️ wmill.get_state для sent_it_ids: {e}")
-        return set()
     if not os.path.exists(SENT_IDS_FILE):
         return set()
     with open(SENT_IDS_FILE, "r", encoding="utf-8") as f:
@@ -490,23 +467,6 @@ def load_sent_ids():
 def save_sent_id(tender_id):
     tid = str(tender_id).strip()
     if not tid:
-        return
-    if use_wmill_state_for_sent_ids():
-        try:
-            import wmill
-
-            s = wmill.get_state()
-            if not isinstance(s, dict):
-                s = {}
-            lst = s.get(WMILL_SENT_IDS_KEY)
-            if not isinstance(lst, list):
-                lst = []
-            if tid not in lst:
-                lst.append(tid)
-            s[WMILL_SENT_IDS_KEY] = lst
-            wmill.set_state(s)
-        except Exception as e:
-            print(f"  ⚠️ wmill.set_state для sent_it_ids: {e}")
         return
     with open(SENT_IDS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{tid}\n")
@@ -700,9 +660,9 @@ def parse_tenders(soup):
     return tenders
 
 def run_parser():
-    """Один цикл: icetrade → фильтры → Telegram; для Windmill вернуть короткий итог.
+    """Один цикл: icetrade → фильтры → Telegram; возвращает краткий итог словарём.
 
-    Переменные: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MENTION, WINDMILL_USE_WMILL_STATE=1 (облако) и см. env.example.
+    Переменные: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MENTION и см. env.example.
     """
     result = {
         "success": False,
@@ -718,7 +678,7 @@ def run_parser():
         print("🚀 Парсер ИТ-тендеров запущен")
         print(f"📅 Диапазон: {cf} - {ct} (последние {DAYS_BACK} дней)")
         print(f"📄 Максимум страниц: {MAX_PAGES}")
-        print(f"💾 Хранилище отправленных ID: {'Windmill state' if use_wmill_state_for_sent_ids() else SENT_IDS_FILE}")
+        print(f"💾 Хранилище отправленных ID: {SENT_IDS_FILE}")
 
         sent_ids = load_sent_ids()
         print(f"📦 Уже отправлено тендеров: {len(sent_ids)}")
@@ -807,15 +767,6 @@ def main():
         run_parser()
     finally:
         close_cli_file_logging()
-
-
-def windmill_main(days_back: int = 30, max_pages: int = 120) -> dict:
-    """Вызывается из Windmill: укажите аргументы флоу и WINDMILL_USE_WMILL_STATE=1 в переменных."""
-    os.environ["DAYS_BACK"] = str(int(days_back))
-    os.environ["MAX_PAGES"] = str(int(max_pages))
-    os.environ.setdefault("WINDMILL_USE_WMILL_STATE", "1")
-    os.environ.setdefault("IT_PARSER_DISABLE_FILE_LOG", "1")
-    return run_parser()
 
 
 if __name__ == "__main__":

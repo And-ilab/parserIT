@@ -4,7 +4,7 @@ Prefect flow: один цикл it_parser.py (icetrade → фильтры → Te
 Запуск из корня репозитория: ``python flows/it_scan_prefect.py``
 
 Переменные окружения (как для it_parser.py): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-WINDMILL_USE_WMILL_STATE, ICETRADE_*, см. env.example и docs/prefect_setup.md.
+ICETRADE_*, см. env.example и docs/prefect_setup.md.
 """
 
 from __future__ import annotations

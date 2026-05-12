@@ -51,7 +51,7 @@ prefect deploy flows/it_scan_prefect.py:icetrade_it_tenders_flow --name local-te
 
    Дальше в UI задайте **schedule** (cron) на deployment.
 
-6. Поднимите **worker** (раньше «agent»), который слушает ваш work pool — по [документации Prefect 3 Workers](https://docs.prefect.io/). На Windows‑сервере с `C:\tender_it` worker должен запускаться с `cwd`, где лежат `it_parser.py` и `flows/`, чтобы `sent_it_ids.txt` писался в репозиторий (или задайте `WINDMILL_USE_WMILL_STATE=1` только если скрипт крутится в Windmill, не смешивайте случайно).
+6. Поднимите **worker** (раньше «agent»), который слушает ваш work pool — по [документации Prefect 3 Workers](https://docs.prefect.io/). На Windows‑сервере с `C:\tender_it` worker должен запускаться с `cwd`, где лежат `it_parser.py` и `flows/`, чтобы `sent_it_ids.txt` писался в репозиторий.
 
 ## 4. Свой Prefect сервер (`prefect server start`)
 
@@ -72,13 +72,3 @@ prefect config set PREFECT_API_URL=http://127.0.0.1:4200/api
 |------------|----------------|
 | `PREFECT_IT_PARSER_RETRIES` | `2` |
 | `PREFECT_IT_PARSER_RETRY_DELAY_SECONDS` | `60` |
-
-## 6. Сравнение с Windmill
-
-| | Prefect | Windmill |
-|--|---------|---------|
-| UI | Runs, блокировки | Flow editor, триггеры |
-| Где живёт код | Git + ваш воркер | Часто sync в Git или UI |
-| Секреты | Prefect Blocks / инфра | Variables workspace |
-
-Вы можете использовать **только Prefect**, только **Windmill**, или Prefect как верхний планировщик и отдельные шаги — по необходимости.
