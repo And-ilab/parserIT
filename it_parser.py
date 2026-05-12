@@ -22,7 +22,7 @@
    - tail -n 80 /opt/parserIT/it_parser_log.txt   (путь поправьте)
 
 Если это не VPS, а ПК/ноутбук с suspend — планировщик не сработает, пока машина спит:
-внешний триггер (GitHub Actions, cron-job.org, Windmill) надёжнее, чем локальный cron.
+внешний триггер (GitHub Actions, cron-job.org и т.п.) надёжнее, чем локальный cron.
 
 5) Рубрикатор отраслей icetrade.by:
    - В запрос поиска добавляется поле industries (скрытый input на форме). По умолчанию уже подставлена строка из вашего рабочего URL
@@ -78,6 +78,7 @@ BOT_TOKEN = (
 CHAT_ID = (
     os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID") or _DEFAULT_CHAT_ID
 ).strip()
+TELEGRAM_MENTION = (os.environ.get("TELEGRAM_MENTION") or "@AndrPon").strip()
 DAYS_BACK = int(os.environ.get("DAYS_BACK", "30"))
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "120"))
 TELEGRAM_SEND_RETRIES = int(os.environ.get("TELEGRAM_SEND_RETRIES", "6"))
@@ -165,25 +166,54 @@ def icetrade_search_extra_params():
     return extra
 
 
-# Перенаправляем вывод в файл
+# Лог в файл только при CLI-запуске (см. init_cli_file_logging в __main__).
+_CLI_LOG_INITIALIZED = False
+log_handle = None
+
+
 class Tee:
     def __init__(self, *files):
         self.files = files
+
     def write(self, obj):
         for f in self.files:
             f.write(obj)
             f.flush()
+
     def flush(self):
         for f in self.files:
             f.flush()
 
-# Удаляем старый лог
-if os.path.exists(LOG_FILE):
-    os.remove(LOG_FILE)
-log_handle = open(LOG_FILE, "w", encoding="utf-8", errors="replace")
-sys.stdout = Tee(sys.stdout, log_handle)
-sys.stderr = Tee(sys.stderr, log_handle)
-# ============================================================
+
+def init_cli_file_logging():
+    """Для `python it_parser.py` на сервере; при импорте из Windmill не вызывается."""
+    global _CLI_LOG_INITIALIZED, log_handle, sys
+    if _CLI_LOG_INITIALIZED:
+        return
+    _CLI_LOG_INITIALIZED = True
+    if os.environ.get("IT_PARSER_DISABLE_FILE_LOG", "").lower() in ("1", "true", "yes"):
+        return
+    if os.path.exists(LOG_FILE):
+        try:
+            os.remove(LOG_FILE)
+        except OSError:
+            pass
+    log_handle = open(LOG_FILE, "w", encoding="utf-8", errors="replace")
+    sys.stdout = Tee(sys.stdout, log_handle)
+    sys.stderr = Tee(sys.stderr, log_handle)
+
+
+def close_cli_file_logging():
+    global log_handle, sys
+    if log_handle is None:
+        return
+    try:
+        log_handle.flush()
+        log_handle.close()
+    except OSError:
+        pass
+    log_handle = None
+
 
 # ---------- СЕМАНТИЧЕСКОЕ ЯДРО ДЛЯ ИТ ----------
 # Только явные IT-маркеры (короткие «разработк», «управлени», «сете», «техническ» давали стройку и закупки).
@@ -407,7 +437,6 @@ def get_date_range(days_back=DAYS_BACK):
     from_date = today - timedelta(days=days_back)
     return from_date.strftime('%d.%m.%Y'), today.strftime('%d.%m.%Y')
 
-created_from, created_to = get_date_range()
 
 BASE_PARAMS = {
     'search_text': '',
@@ -426,19 +455,21 @@ BASE_PARAMS = {
     'r[1]': '1', 'r[2]': '2', 'r[7]': '7',
     'r[3]': '3', 'r[4]': '4', 'r[6]': '6', 'r[5]': '5',
     'sort': 'num:desc', 'onPage': '20',
-    'created_from': created_from,
-    'created_to': created_to,
 }
 
 def load_sent_ids():
     if not os.path.exists(SENT_IDS_FILE):
         return set()
-    with open(SENT_IDS_FILE, 'r', encoding='utf-8') as f:
+    with open(SENT_IDS_FILE, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
+
 def save_sent_id(tender_id):
-    with open(SENT_IDS_FILE, 'a', encoding='utf-8') as f:
-        f.write(f"{tender_id}\n")
+    tid = str(tender_id).strip()
+    if not tid:
+        return
+    with open(SENT_IDS_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{tid}\n")
         f.flush()
         os.fsync(f.fileno())
 
@@ -584,7 +615,8 @@ def build_telegram_chunks(mention, days_back, all_new_tenders):
     return out
 
 def get_page(page_num):
-    params = {**BASE_PARAMS, **icetrade_search_extra_params(), 'p': page_num}
+    cf, ct = get_date_range()
+    params = {**BASE_PARAMS, **icetrade_search_extra_params(), 'p': page_num, 'created_from': cf, 'created_to': ct}
     try:
         r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=20, verify=False)
         r.raise_for_status()
@@ -627,12 +659,26 @@ def parse_tenders(soup):
         })
     return tenders
 
-def main():
+def run_parser():
+    """Один цикл: icetrade → фильтры → Telegram; возвращает краткий итог словарём.
+
+    Переменные: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_MENTION и см. env.example.
+    """
+    result = {
+        "success": False,
+        "new_tenders_count": 0,
+        "ids_saved": 0,
+        "telegram_ok": None,
+        "telegram_chunks": None,
+        "error": None,
+    }
+    mention = TELEGRAM_MENTION
     try:
-        mention = "@AndrPon"
+        cf, ct = get_date_range()
         print("🚀 Парсер ИТ-тендеров запущен")
-        print(f"📅 Диапазон: {created_from} - {created_to} (последние {DAYS_BACK} дней)")
+        print(f"📅 Диапазон: {cf} - {ct} (последние {DAYS_BACK} дней)")
         print(f"📄 Максимум страниц: {MAX_PAGES}")
+        print(f"💾 Хранилище отправленных ID: {SENT_IDS_FILE}")
 
         sent_ids = load_sent_ids()
         print(f"📦 Уже отправлено тендеров: {len(sent_ids)}")
@@ -651,7 +697,7 @@ def main():
             if tenders:
                 new_on_page = 0
                 for t in tenders:
-                    tender_id = extract_tender_id(t['url'])
+                    tender_id = extract_tender_id(t["url"])
                     if not tender_id:
                         continue
                     if tender_id in sent_ids or tender_id in seen_in_session:
@@ -666,7 +712,9 @@ def main():
 
             time.sleep(random.uniform(1.5, 2.5))
 
-        print(f"\n📊 ИТОГО новых ИТ-тендеров: {len(all_new_tenders)}")
+        n = len(all_new_tenders)
+        result["new_tenders_count"] = n
+        print(f"\n📊 ИТОГО новых ИТ-тендеров: {n}")
 
         telegram_warmup()
 
@@ -674,30 +722,52 @@ def main():
             msg = f"{mention}\n📭 За последние {DAYS_BACK} дней новых ИТ-тендеров не найдено."
             if send_telegram(msg):
                 print("📭 Сообщение в Telegram доставлено (тендеров нет)")
+                result["telegram_ok"] = True
+                result["success"] = True
             else:
                 print("❌ Не удалось отправить сообщение в Telegram (тендеров нет). sent_it_ids не менялся.")
+                result["telegram_ok"] = False
+                result["success"] = False
         else:
-            all_new_tenders.sort(key=lambda x: x.get('date_end', ''), reverse=False)
+            all_new_tenders.sort(key=lambda x: x.get("date_end", ""), reverse=False)
             chunks = build_telegram_chunks(mention, DAYS_BACK, all_new_tenders)
             saved = 0
+            completed_all_chunks = True
+            result["telegram_chunks"] = len(chunks)
             for idx, (text, ids_in_chunk) in enumerate(chunks):
                 if not send_telegram(text):
                     print(
                         f"❌ Часть {idx + 1}/{len(chunks)} не отправлена — остановка без записи этой и следующих частей; "
                         "повторите запуск позже."
                     )
+                    completed_all_chunks = False
                     break
                 for tid in ids_in_chunk:
                     save_sent_id(tid)
                     saved += 1
-            print(f"✅ Записано новых ID в sent_it_ids: {saved} (из {len(all_new_tenders)} найденных)")
+            result["ids_saved"] = saved
+            result["telegram_ok"] = completed_all_chunks
+            result["success"] = completed_all_chunks
 
+        print("\n✅ Готово!")
+        return result
     except Exception:
-        print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
-        print(traceback.format_exc())
+        tb = traceback.format_exc()
+        result["error"] = tb
+        print("\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
+        print(tb)
+        print("\n✅ Готово!")
+        return result
 
-    print("\n✅ Готово!")
 
-if __name__ == '__main__':
+def main():
+    """Точка входа для локального сервера: лог в it_parser_log.txt рядом со скриптом."""
+    init_cli_file_logging()
+    try:
+        run_parser()
+    finally:
+        close_cli_file_logging()
+
+
+if __name__ == "__main__":
     main()
-    log_handle.close()
