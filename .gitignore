@@ -3,3 +3,4 @@ __pycache__/
 .env
 # Локальные параметры отраслей icetrade (см. icetrade_industry_params.example.json)
 icetrade_industry_params.json
+icetrade_industry_params_angar.json

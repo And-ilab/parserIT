@@ -1,24 +1,12 @@
-# Run it_parser.py on the Windows self-hosted runner on a schedule (cron is UTC).
-# Does not use Windows Task Scheduler.
+# То же окружение, что и для ИТ (C:\tender_it, self-hosted Windows runner).
+# Расписание: на 1 час позже профиля ИТ — ~01:00 и ~13:00 Минск → 22:00 и 10:00 UTC.
 #
-# Needs: runner Online; folder C:\tender_it; git and python on PATH for the runner account.
-# Manual: Actions -> "Run tender parser on server" -> Run workflow.
-#
-# Schedule: twice daily — ~00:00 and ~12:00 Minsk (UTC+3): 21:00 and 09:00 UTC (ИТ).
-# Ангары: см. workflow run-angar-parser-on-server.yml +1 час (22 и 10 UTC).
-#
-# If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
-# service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained
-# PAT, read-only on this repo) — workflow will set origin URL before pull.
-#
-# "dubious ownership": Administrators own C:\tender_it but git runs as NETWORK SERVICE — each git uses -c safe.directory=...
-
-name: Run tender parser on server
+name: Run angar parser on server
 
 on:
   schedule:
-    - cron: '0 21 * * *'
-    - cron: '0 9 * * *'
+    - cron: '0 22 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch:
 
 defaults:
@@ -64,10 +52,10 @@ jobs:
             python -m pip install -q -r requirements.txt
           }
 
-      - name: Run it_parser.py
+      - name: Run angar_parser.py
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
-          python it_parser.py
+          python angar_parser.py
 
       - name: Log schedule completion (UTC) on server
         if: always()
@@ -75,5 +63,5 @@ jobs:
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $rid = '${{ github.run_id }}'
-          $line = ('{0:u} run-parser-on-server finished run_id={1}' -f [datetime]::UtcNow, $rid)
-          Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule.log') -Value $line
+          $line = ('{0:u} run-angar-parser-on-server finished run_id={1}' -f [datetime]::UtcNow, $rid)
+          Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule-angar.log') -Value $line
