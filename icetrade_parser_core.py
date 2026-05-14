@@ -592,9 +592,11 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     log_path = os.path.join(script_dir, profile.log_filename)
     if os.path.exists(log_path):
         os.remove(log_path)
+    orig_out = sys.stdout
+    orig_err = sys.stderr
     log_handle = open(log_path, "w", encoding="utf-8", errors="replace")
-    sys.stdout = Tee(sys.stdout, log_handle)
-    sys.stderr = Tee(sys.stderr, log_handle)
+    sys.stdout = Tee(orig_out, log_handle)
+    sys.stderr = Tee(orig_err, log_handle)
 
     rc = RunnerConfig(
         profile=profile,
@@ -630,10 +632,19 @@ def cli_main(profile: IcetradeParserProfile) -> None:
         )
 
     try:
-        run_parser_cycle(rc, mention, tmpl_empty=tmpl_empty, tmpl_single=tmpl_single, tmpl_part=tmpl_part)
-    except Exception:
-        print("\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
-        print(traceback.format_exc())
-
-    print("\n✅ Готово!")
-    log_handle.close()
+        try:
+            run_parser_cycle(rc, mention, tmpl_empty=tmpl_empty, tmpl_single=tmpl_single, tmpl_part=tmpl_part)
+        except Exception:
+            print("\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
+            print(traceback.format_exc())
+        print("\n✅ Готово!")
+    finally:
+        # Вернуть stdout/stderr до закрытия лога — иначе при выходе из интерпретатора flush в закрытый файл.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        sys.stdout = orig_out
+        sys.stderr = orig_err
+        log_handle.close()
