@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -90,6 +91,7 @@ class IcetradeParserProfile:
     tmpl_run_title: str
     tmpl_done_count_label: str
     telegram_mention_env: str
+    telegram_append_keyword_roots_footer: bool = False  # блок корней ключевых слов в Telegram (ангары)
 
 
 def resolve_bot_token(profile: IcetradeParserProfile) -> str:
@@ -335,19 +337,72 @@ def is_blacklisted(title: str, blacklist: tuple[str, ...]) -> bool:
 
 
 def format_price(price_str: str) -> str:
-    if not price_str or price_str == "—":
+    """
+    Сайт может отдавать суммы вида «190 688.40 BYN» (пробелы тысяч + доли рубля/копеек по BYN).
+    """
+    if not price_str or price_str.strip() == "—":
         return "—"
-    match = re.search(r"([\d\s]+)\s*(BYN|руб|USD|EUR)", price_str, re.I)
-    if not match:
+    raw = price_str.strip().replace("\u00a0", " ").replace("\u202f", " ")
+    m = re.search(
+        r"([\d\s\.,]+)\s*(BYN|руб\.?)\s*$|([\d\s\.,]+)\s*(USD|EUR)\s*$",
+        raw,
+        re.I,
+    )
+    if not m:
         return price_str
-    num_part = match.group(1).strip().replace(" ", "")
-    currency = match.group(2).upper()
+    if m.group(1):
+        num_raw = m.group(1)
+        curr_raw = m.group(2)
+        cur_disp = "руб" if curr_raw.lower().startswith("руб") else curr_raw.upper()
+    else:
+        num_raw = m.group(3)
+        curr_raw = m.group(4)
+        cur_disp = curr_raw.upper()
+
+    nums = "".join(ch for ch in num_raw if not ch.isspace())
+    if not nums or not re.fullmatch(r"[\d\.,]+", nums):
+        return price_str
+
+    if nums.count(",") and nums.count("."):
+        if nums.rfind(",") > nums.rfind("."):
+            nums = nums.replace(".", "").replace(",", ".")
+        else:
+            nums = nums.replace(",", "")
+    elif nums.count(","):
+        if nums.count(",") == 1 and len(nums.split(",")[-1]) <= 2:
+            nums = nums.replace(",", ".")
+        else:
+            nums = nums.replace(",", "")
     try:
-        num_int = int(num_part)
-        formatted = f"{num_int:,}".replace(",", " ")
-        return f"{formatted} {currency}"
-    except Exception:
-        return f"{num_part} {currency}"
+        val = float(nums)
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError
+    except ValueError:
+        return price_str
+
+    if abs(val - round(val)) < 1e-6:
+        n = int(round(val))
+        formatted = f"{n:,}".replace(",", " ")
+    else:
+        neg = val < 0
+        av = abs(val)
+        frac_s = f"{av:.2f}"
+        integer_part_s, frac = frac_s.split(".", 1)
+        int_sep = int(integer_part_s)
+        pref = "-" if neg else ""
+        head = pref + (f"{int_sep:,}".replace(",", " "))
+        formatted = f"{head}.{frac}"
+    return f"{formatted} {cur_disp}"
+
+
+def _keyword_roots_footer_html(profile: IcetradeParserProfile) -> str:
+    if not profile.telegram_append_keyword_roots_footer or not profile.keywords_roots:
+        return ""
+    bullets = "\n".join(f"   • {r}" for r in profile.keywords_roots)
+    return (
+        '\n\n🔎 <b>Семантическое ядро (поисковые корни):</b>\n'
+        f"{bullets}"
+    )
 
 
 def _telegram_send_once(bot_token: str, chat_id: str, text: str) -> tuple[bool, str]:
@@ -550,8 +605,10 @@ def run_parser_cycle(
 
     telegram_warmup(rc.bot_token)
 
+    kw_footer = _keyword_roots_footer_html(profile)
+
     if not all_new_tenders:
-        msg = tmpl_empty(mention=mention, days_back=rc.days_back)
+        msg = tmpl_empty(mention=mention, days_back=rc.days_back) + kw_footer
         if send_telegram(rc.bot_token, rc.chat_id, msg, rc.telegram_send_retries):
             print("📭 Сообщение в Telegram доставлено (тендеров нет)")
         else:
@@ -559,6 +616,9 @@ def run_parser_cycle(
     else:
         all_new_tenders.sort(key=lambda x: x.get("date_end", ""), reverse=False)
         chunks = build_telegram_chunks(rc, mention, all_new_tenders, tmpl_single=tmpl_single, tmpl_part=tmpl_part)
+        if kw_footer and chunks:
+            last_txt, last_ids = chunks[-1]
+            chunks[-1] = (last_txt + kw_footer, last_ids)
         saved = 0
         for idx, (text, ids_in_chunk) in enumerate(chunks):
             if not send_telegram(rc.bot_token, rc.chat_id, text, rc.telegram_send_retries):

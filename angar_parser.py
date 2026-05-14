@@ -46,6 +46,7 @@ ANGAR_PROFILE = IcetradeParserProfile(
     tmpl_run_title="Парсер тендеров по ангарам запущен",
     tmpl_done_count_label="тендеров по ангарам",
     telegram_mention_env="ANGAR_TELEGRAM_MENTION",
+    telegram_append_keyword_roots_footer=True,
 )
 
 
