@@ -4,3 +4,6 @@ __pycache__/
 # Локальные параметры отраслей icetrade (см. icetrade_industry_params.example.json)
 icetrade_industry_params.json
 icetrade_industry_params_angar.json
+
+# Журнал запусков/отправок (создаётся локально или на сервере)
+logs/

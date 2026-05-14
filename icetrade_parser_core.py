@@ -21,7 +21,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import requests
@@ -141,6 +141,44 @@ class RunnerConfig:
 
 
 HEADER_RESERVE_DEFAULT = 280
+
+
+def _utc_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def transfer_log_disabled() -> bool:
+    return os.environ.get("ICETRADE_DISABLE_TRANSFER_LOG", "").lower() in ("1", "true", "yes", "on")
+
+
+def append_transfer_journal(script_dir: str, event: str, **kv: object) -> None:
+    """Строковый журнал отправок Telegram (UTC, UTF-8), каталог logs/ создаётся при необходимости."""
+    if transfer_log_disabled():
+        return
+    try:
+        log_dir = os.path.join(script_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        default_path = os.path.join(log_dir, "telegram_transfer.log")
+        path = os.environ.get("ICETRADE_TRANSFER_LOG") or default_path
+        parts = [_utc_ts(), f"event={event}"]
+        gh = os.environ.get("GITHUB_RUN_ID")
+        if gh:
+            parts.append(f"github_run={gh}")
+        wf = os.environ.get("GITHUB_WORKFLOW")
+        if wf:
+            parts.append(f"github_workflow={wf}")
+        for key in sorted(kv):
+            val = kv[key]
+            if val is None:
+                continue
+            parts.append(f"{key}={val}")
+        line = "\t".join(parts) + "\n"
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        print("  ⚠️ Не удалось дописать журнал передач (checks logs/, права записи)")
 
 
 def get_date_range(days_back: int) -> tuple[str, str]:
@@ -574,12 +612,14 @@ def run_parser_cycle(
 
     all_new_tenders = []
     seen_in_session = set()
+    stopped_early_bad_page = False
 
     for page in range(1, rc.max_pages + 1):
         print(f"\n--- Страница {page} ---")
         soup = get_page(rc, page)
         if not soup:
             print("❌ ошибка загрузки, прерываем")
+            stopped_early_bad_page = True
             break
 
         tenders = parse_tenders(soup, profile.keywords_roots, profile.blacklist)
@@ -601,40 +641,91 @@ def run_parser_cycle(
 
         time.sleep(random.uniform(1.5, 2.5))
 
-    print(f"\n📊 ИТОГО новых ({profile.tmpl_done_count_label}): {len(all_new_tenders)}")
+    xfer_new = len(all_new_tenders)
+    print(f"\n📊 ИТОГО новых ({profile.tmpl_done_count_label}): {xfer_new}")
 
     telegram_warmup(rc.bot_token)
 
     kw_footer = _keyword_roots_footer_html(profile)
+    xfer_chunks_total: int | None = None
+    xfer_saved_ids = 0
+    xfer_delivery_ok = False
 
     if not all_new_tenders:
         msg = tmpl_empty(mention=mention, days_back=rc.days_back) + kw_footer
-        if send_telegram(rc.bot_token, rc.chat_id, msg, rc.telegram_send_retries):
+        xfer_chunks_total = 1
+        xfer_delivery_ok = send_telegram(rc.bot_token, rc.chat_id, msg, rc.telegram_send_retries)
+        append_transfer_journal(
+            rc.script_dir,
+            "telegram_delivery",
+            profile=profile.id,
+            mode="empty",
+            ok=xfer_delivery_ok,
+            tg_chars=len(msg),
+        )
+        if xfer_delivery_ok:
             print("📭 Сообщение в Telegram доставлено (тендеров нет)")
         else:
             print("❌ Не удалось отправить сообщение в Telegram (тендеров нет). sent_* не менялся.")
     else:
         all_new_tenders.sort(key=lambda x: x.get("date_end", ""), reverse=False)
         chunks = build_telegram_chunks(rc, mention, all_new_tenders, tmpl_single=tmpl_single, tmpl_part=tmpl_part)
+        xfer_chunks_total = len(chunks)
         if kw_footer and chunks:
             last_txt, last_ids = chunks[-1]
             chunks[-1] = (last_txt + kw_footer, last_ids)
-        saved = 0
-        for idx, (text, ids_in_chunk) in enumerate(chunks):
-            if not send_telegram(rc.bot_token, rc.chat_id, text, rc.telegram_send_retries):
-                print(
-                    f"❌ Часть {idx + 1}/{len(chunks)} не отправлена — остановка без записи этой и следующих частей; "
-                    "повторите запуск позже."
+        if xfer_chunks_total == 0:
+            print("⚠️ Нечего отправлять: чанков Telegram для новых лотов не сформировано.")
+            xfer_delivery_ok = False
+        else:
+            for idx, (text, ids_in_chunk) in enumerate(chunks):
+                ok_chunk = send_telegram(rc.bot_token, rc.chat_id, text, rc.telegram_send_retries)
+                n_written_slot = sum(1 for x in ids_in_chunk if x)
+                append_transfer_journal(
+                    rc.script_dir,
+                    "telegram_delivery",
+                    profile=profile.id,
+                    mode="chunk",
+                    part=f"{idx + 1}/{len(chunks)}",
+                    ok=ok_chunk,
+                    tg_chars=len(text),
+                    tg_new_ids_written=n_written_slot if ok_chunk else 0,
                 )
-                break
-            for tid in ids_in_chunk:
-                if tid:
-                    save_sent_id(sent_path, tid)
-                    saved += 1
+                if not ok_chunk:
+                    print(
+                        f"❌ Часть {idx + 1}/{len(chunks)} не отправлена — остановка без записи этой и следующих частей; "
+                        "повторите запуск позже."
+                    )
+                    xfer_delivery_ok = False
+                    break
+                for tid in ids_in_chunk:
+                    if tid:
+                        save_sent_id(sent_path, tid)
+                        xfer_saved_ids += 1
+            else:
+                xfer_delivery_ok = True
         print(
-            f"✅ Записано новых ID в {profile.sent_ids_filename}: {saved} (из {len(all_new_tenders)} найденных)"
+            f"✅ Записано новых ID в {profile.sent_ids_filename}: {xfer_saved_ids} "
+            f"(из {xfer_new} найденных)"
         )
 
+    append_transfer_journal(
+        rc.script_dir,
+        "parser_cycle_summary",
+        profile=profile.id,
+        new_candidates=xfer_new,
+        stopped_early_bad_page=stopped_early_bad_page,
+        telegram_ok=xfer_delivery_ok,
+        telegram_chunks=xfer_chunks_total if xfer_chunks_total is not None else 0,
+        telegram_ids_saved=xfer_saved_ids,
+        days_back=rc.days_back,
+        max_pages=rc.max_pages,
+    )
+    if not transfer_log_disabled():
+        xfer_leaf = (
+            os.path.basename(os.environ.get("ICETRADE_TRANSFER_LOG") or "").strip()
+            or "logs/telegram_transfer.log"
+        )
 
 def cli_main(profile: IcetradeParserProfile) -> None:
     global _extra_params_cache_by_profile_id
