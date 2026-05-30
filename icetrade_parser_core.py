@@ -92,6 +92,9 @@ class IcetradeParserProfile:
     tmpl_done_count_label: str
     telegram_mention_env: str
     telegram_append_keyword_roots_footer: bool = False  # блок корней ключевых слов в Telegram (ангары)
+    # Мягкий стоп-лист: срабатывает только если в заголовке нет «сильного» корня (см. keywords_strong_roots).
+    blacklist_soft: tuple[str, ...] = ()
+    keywords_strong_roots: tuple[str, ...] = ()
 
 
 def _env_first(*names: str) -> str:
@@ -397,11 +400,25 @@ def matches_roots(title: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
-def is_blacklisted(title: str, blacklist: tuple[str, ...]) -> bool:
+def _title_has_strong_signal(title_lower: str, strong_roots: tuple[str, ...]) -> bool:
+    return bool(strong_roots) and any(root in title_lower for root in strong_roots)
+
+
+def is_blacklisted(
+    title: str,
+    blacklist: tuple[str, ...],
+    *,
+    blacklist_soft: tuple[str, ...] = (),
+    keywords_strong_roots: tuple[str, ...] = (),
+) -> bool:
     title_lower = title.lower()
     for word in blacklist:
         if word in title_lower:
             return True
+    if blacklist_soft and not _title_has_strong_signal(title_lower, keywords_strong_roots):
+        for word in blacklist_soft:
+            if word in title_lower:
+                return True
     return False
 
 
@@ -585,7 +602,7 @@ def build_telegram_chunks(
     return out
 
 
-def parse_tenders(soup: BeautifulSoup, keywords: tuple[str, ...], blacklist: tuple[str, ...]):
+def parse_tenders(soup: BeautifulSoup, profile: IcetradeParserProfile):
     tenders = []
     rows = soup.select("#auctions-list tr")
     if len(rows) <= 1:
@@ -598,9 +615,14 @@ def parse_tenders(soup: BeautifulSoup, keywords: tuple[str, ...], blacklist: tup
         if not link_tag:
             continue
         title = link_tag.get_text(strip=True)
-        if not matches_roots(title, keywords):
+        if not matches_roots(title, profile.keywords_roots):
             continue
-        if is_blacklisted(title, blacklist):
+        if is_blacklisted(
+            title,
+            profile.blacklist,
+            blacklist_soft=profile.blacklist_soft,
+            keywords_strong_roots=profile.keywords_strong_roots,
+        ):
             print(f"   ⛔ Исключён по чёрному списку: {title[:60]}")
             continue
         url = link_tag.get("href")
@@ -653,7 +675,7 @@ def run_parser_cycle(
             stopped_early_bad_page = True
             break
 
-        tenders = parse_tenders(soup, profile.keywords_roots, profile.blacklist)
+        tenders = parse_tenders(soup, profile)
         if tenders:
             new_on_page = 0
             for t in tenders:
