@@ -758,10 +758,33 @@ def run_parser_cycle(
             or "logs/telegram_transfer.log"
         )
 
+def _load_dotenv_if_present(script_dir: str) -> None:
+    """Опционально: .env рядом со скриптами (в .gitignore), только если переменная ещё не задана."""
+    path = os.path.join(script_dir, ".env")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                name, _, val = line.partition("=")
+                name = name.strip()
+                val = val.strip().strip('"').strip("'")
+                if name and name not in os.environ:
+                    os.environ[name] = val
+    except OSError:
+        print(f"  ⚠️ Не удалось прочитать {path}")
+
+
 def cli_main(profile: IcetradeParserProfile) -> None:
     global _extra_params_cache_by_profile_id
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
+    _load_dotenv_if_present(script_dir)
     _extra_params_cache_by_profile_id = None
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)
