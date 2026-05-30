@@ -1,8 +1,8 @@
 """
 Общее ядро парсера icetrade.by → Telegram (ИТ-профиль и профиль ангаров).
 
-ИТ-профиль: по умолчанию задаётся рубрикатор отраслей ИТ на icetrade; переопределение через JSON/env
-(как в it_parser.py).
+ИТ-профиль (id «it»): по умолчанию без industries — поиск по всему icetrade, отбор ключевыми словами
+и чёрным списком. Рубрикатор опционально: ICETRADE_INDUSTRIES / icetrade_industry_params.json.
 
 Профиль ангаров (id «angar»): рубрикатор по умолчанию не подставляется — запрос идёт без industries,
 список тендеров сужается только ключевыми словами и чёрным списком. Позже рубрикатор можно включить
@@ -274,11 +274,18 @@ def icetrade_search_extra_params(profile: IcetradeParserProfile, script_dir: str
                     _logged_industry_mode[env_key_logged] = True
         else:
             if not logged:
-                print(
-                    "  📎 icetrade [angar]: industries не заданы — поиск по всему icetrade.by, "
-                    "отбор только ключевыми словами и чёрным списком. "
-                    "Позже можно задать рубрикатор: ANGAR_ICETRADE_INDUSTRIES или icetrade_industry_params_angar.json."
-                )
+                if profile.id == "it":
+                    print(
+                        "  📎 icetrade [it]: industries не заданы — поиск по всему icetrade.by, "
+                        "отбор ключевыми словами и чёрным списком. "
+                        "Сузить выдачу: ICETRADE_INDUSTRIES или icetrade_industry_params.json."
+                    )
+                else:
+                    print(
+                        "  📎 icetrade [angar]: industries не заданы — поиск по всему icetrade.by, "
+                        "отбор только ключевыми словами и чёрным списком. "
+                        "Позже можно задать рубрикатор: ANGAR_ICETRADE_INDUSTRIES или icetrade_industry_params_angar.json."
+                    )
                 _logged_industry_mode[env_key_logged] = True
     return extra
 

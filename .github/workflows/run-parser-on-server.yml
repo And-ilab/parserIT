@@ -6,6 +6,7 @@
 #
 # Schedule: twice daily — ~00:00 and ~12:00 Minsk (UTC+3): 21:00 and 09:00 UTC (ИТ).
 # Ангары: см. workflow run-angar-parser-on-server.yml +1 час (22 и 10 UTC).
+# ИТ: поиск без рубрикатора industries (семантика + blacklist); industries только через env/JSON.
 #
 # If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
 # service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained

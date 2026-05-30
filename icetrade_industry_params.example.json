@@ -1,4 +1,4 @@
 {
-  "_README": "Опционально: переопределить industries. По умолчанию парсер уже подставляет ту же строку, что в вашем URL icetrade. Чтобы отключить фильтр: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off.",
+  "_README": "Опционально: включить сужение по отраслям icetrade (по умолчанию ИТ-парсер ищет без industries). Скопируйте в icetrade_industry_params.json только если нужен рубрикатор.",
   "industries": "16/17/18/105.106-115/116.117-122/179/370.371-387"
 }

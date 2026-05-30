@@ -9,11 +9,11 @@
    - crontab -l / планировщик Windows / GitHub Actions self-hosted runner
 2) Лог последнего запуска рядом со скриптом: it_parser_log.txt
 
-Профиль ангаров: angar_parser.py (другая семантика, без ИТ-рубрикатора по умолчанию).
+Профиль ангаров: angar_parser.py (свои ключевые слова; рубрикатор по умолчанию тоже выключен).
 
-Рубрикатор отраслей icetrade (ИТ):
-   - По умолчанию ИТ + компьютеры; отключить: ICETRADE_DISABLE_DEFAULT_INDUSTRY=1 или ICETRADE_INDUSTRIES=off
-   - Файл icetrade_industry_params.json или ICETRADE_PARAMS_JSON — см. icetrade_industry_params.example.json
+Поиск ИТ по icetrade.by:
+   - По умолчанию — вся выдача сайта за период, отбор ключевыми словами и чёрным списком (кросс-отраслевая «разработка» не теряется).
+   - Рубрикатор industries — только если явно задан: ICETRADE_INDUSTRIES, icetrade_industry_params.json или ICETRADE_PARAMS_JSON.
 """
 from icetrade_parser_core import IcetradeParserProfile, cli_main
 
@@ -237,7 +237,7 @@ IT_PROFILE = IcetradeParserProfile(
     sent_ids_filename="sent_it_ids.txt",
     log_filename="it_parser_log.txt",
     default_mention="@AndrPon",
-    use_it_default_industries_if_missing=True,
+    use_it_default_industries_if_missing=False,
     tmpl_empty_ok=(
         "{{mention}}\n📭 За последние {{days_back}} дней новых ИТ-тендеров не найдено."
     ).replace("{{", "{").replace("}}", "}"),
