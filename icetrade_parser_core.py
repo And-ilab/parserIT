@@ -1,8 +1,8 @@
 """
 Общее ядро парсера icetrade.by → Telegram (ИТ-профиль и профиль ангаров).
 
-ИТ-профиль: по умолчанию задаётся рубрикатор отраслей ИТ на icetrade; переопределение через JSON/env
-(как в it_parser.py).
+ИТ-профиль (id «it»): по умолчанию без industries — поиск по всему icetrade, отбор ключевыми словами
+и чёрным списком. Рубрикатор опционально: ICETRADE_INDUSTRIES / icetrade_industry_params.json.
 
 Профиль ангаров (id «angar»): рубрикатор по умолчанию не подставляется — запрос идёт без industries,
 список тендеров сужается только ключевыми словами и чёрным списком. Позже рубрикатор можно включить
@@ -94,30 +94,31 @@ class IcetradeParserProfile:
     telegram_append_keyword_roots_footer: bool = False  # блок корней ключевых слов в Telegram (ангары)
 
 
+def _env_first(*names: str) -> str:
+    for name in names:
+        v = os.environ.get(name)
+        if v and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
 def resolve_bot_token(profile: IcetradeParserProfile) -> str:
     if profile.id == "angar":
-        v = (
-            os.environ.get("ANGAR_TELEGRAM_BOT_TOKEN")
-            or os.environ.get("TELEGRAM_BOT_TOKEN")
-            or os.environ.get("BOT_TOKEN")
-        )
+        v = _env_first("ANGAR_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN")
+    elif profile.id == "equipment":
+        v = _env_first("EQUIPMENT_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN")
     else:
-        v = (
-            os.environ.get("TELEGRAM_BOT_TOKEN")
-            or os.environ.get("BOT_TOKEN")
-        )
+        v = _env_first("TELEGRAM_BOT_TOKEN", "BOT_TOKEN")
     return (v or _DEFAULT_BOT_TOKEN_FALLBACK).strip()
 
 
 def resolve_chat_id(profile: IcetradeParserProfile) -> str:
     if profile.id == "angar":
-        v = (
-            os.environ.get("ANGAR_TELEGRAM_CHAT_ID")
-            or os.environ.get("TELEGRAM_CHAT_ID")
-            or os.environ.get("CHAT_ID")
-        )
-    else:
-        v = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("CHAT_ID")
+        v = _env_first("ANGAR_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "CHAT_ID")
+        return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+    if profile.id == "equipment":
+        return _env_first("EQUIPMENT_TELEGRAM_CHAT_ID")
+    v = _env_first("TELEGRAM_CHAT_ID", "CHAT_ID")
     return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
 
 
@@ -193,6 +194,11 @@ def _extra_params_json_path(profile: IcetradeParserProfile, script_dir: str) -> 
         if p and p.strip():
             return os.path.abspath(p.strip())
         return os.path.join(script_dir, "icetrade_industry_params_angar.json")
+    if profile.id == "equipment":
+        p = os.environ.get("EQUIPMENT_ICETRADE_PARAMS_JSON")
+        if p and p.strip():
+            return os.path.abspath(p.strip())
+        return os.path.join(script_dir, "icetrade_industry_params_equipment.json")
     return os.environ.get(
         "ICETRADE_PARAMS_JSON", os.path.join(script_dir, "icetrade_industry_params.json")
     )
@@ -241,6 +247,10 @@ def icetrade_search_extra_params(profile: IcetradeParserProfile, script_dir: str
         ind_env = os.environ.get("ICETRADE_INDUSTRIES")
         env_key_logged = "it"
         disable_key = os.environ.get("ICETRADE_DISABLE_DEFAULT_INDUSTRY", "")
+    elif profile.id == "equipment":
+        ind_env = os.environ.get("EQUIPMENT_ICETRADE_INDUSTRIES")
+        env_key_logged = "equipment"
+        disable_key = os.environ.get("EQUIPMENT_ICETRADE_DISABLE_DEFAULT_INDUSTRY", "")
     else:
         ind_env = os.environ.get("ANGAR_ICETRADE_INDUSTRIES")
         env_key_logged = "angar"
@@ -253,13 +263,21 @@ def icetrade_search_extra_params(profile: IcetradeParserProfile, script_dir: str
         if s.lower() in ("", "none", "off", "0"):
             extra.pop("industries", None)
             if not logged:
-                which = "ICETRADE_INDUSTRIES" if profile.id == "it" else "ANGAR_ICETRADE_INDUSTRIES"
+                which = {
+                    "it": "ICETRADE_INDUSTRIES",
+                    "angar": "ANGAR_ICETRADE_INDUSTRIES",
+                    "equipment": "EQUIPMENT_ICETRADE_INDUSTRIES",
+                }.get(profile.id, "ICETRADE_INDUSTRIES")
                 print(f"  📎 icetrade [{profile.id}]: industries отключены ({which} пусто/off)")
                 _logged_industry_mode[env_key_logged] = True
         else:
             extra["industries"] = s
             if not logged:
-                which = "ICETRADE_INDUSTRIES" if profile.id == "it" else "ANGAR_ICETRADE_INDUSTRIES"
+                which = {
+                    "it": "ICETRADE_INDUSTRIES",
+                    "angar": "ANGAR_ICETRADE_INDUSTRIES",
+                    "equipment": "EQUIPMENT_ICETRADE_INDUSTRIES",
+                }.get(profile.id, "ICETRADE_INDUSTRIES")
                 print(f"  📎 icetrade [{profile.id}]: industries из переменной {which}")
                 _logged_industry_mode[env_key_logged] = True
     elif "industries" not in extra:
@@ -274,11 +292,24 @@ def icetrade_search_extra_params(profile: IcetradeParserProfile, script_dir: str
                     _logged_industry_mode[env_key_logged] = True
         else:
             if not logged:
-                print(
-                    "  📎 icetrade [angar]: industries не заданы — поиск по всему icetrade.by, "
-                    "отбор только ключевыми словами и чёрным списком. "
-                    "Позже можно задать рубрикатор: ANGAR_ICETRADE_INDUSTRIES или icetrade_industry_params_angar.json."
-                )
+                if profile.id == "it":
+                    print(
+                        "  📎 icetrade [it]: industries не заданы — поиск по всему icetrade.by, "
+                        "отбор ключевыми словами и чёрным списком. "
+                        "Сузить выдачу: ICETRADE_INDUSTRIES или icetrade_industry_params.json."
+                    )
+                elif profile.id == "equipment":
+                    print(
+                        "  📎 icetrade [equipment]: industries не заданы — поиск по всему icetrade.by, "
+                        "отбор ключевыми словами и чёрным списком. "
+                        "Сузить: EQUIPMENT_ICETRADE_INDUSTRIES или icetrade_industry_params_equipment.json."
+                    )
+                else:
+                    print(
+                        "  📎 icetrade [angar]: industries не заданы — поиск по всему icetrade.by, "
+                        "отбор только ключевыми словами и чёрным списком. "
+                        "Позже можно задать рубрикатор: ANGAR_ICETRADE_INDUSTRIES или icetrade_industry_params_angar.json."
+                    )
                 _logged_industry_mode[env_key_logged] = True
     return extra
 
@@ -735,6 +766,13 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)
     chat = resolve_chat_id(profile)
+    if profile.id == "equipment" and not chat:
+        print(
+            "❌ Для профиля equipment задайте EQUIPMENT_TELEGRAM_CHAT_ID "
+            "(числовой id группы; бот должен быть участником). "
+            "Ссылка-приглашение t.me/+… не подходит как chat_id."
+        )
+        sys.exit(1)
     days_back = int(os.environ.get("DAYS_BACK", "30"))
     max_pages = int(os.environ.get("MAX_PAGES", "120"))
     retries = int(os.environ.get("TELEGRAM_SEND_RETRIES", "6"))

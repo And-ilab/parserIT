@@ -1,25 +1,12 @@
-# Run it_parser.py on the Windows self-hosted runner on a schedule (cron is UTC).
-# Does not use Windows Task Scheduler.
+# Станки, линии, технологическое оборудование — отдельная Telegram-группа.
+# Расписание: +1 ч после ангаров (+2 ч после ИТ) → ~02:00 и ~14:00 Минск (23:00 и 11:00 UTC).
 #
-# Needs: runner Online; folder C:\tender_it; git and python on PATH for the runner account.
-# Manual: Actions -> "Run tender parser on server" -> Run workflow.
-#
-# Schedule: twice daily — ~00:00 and ~12:00 Minsk (UTC+3): 21:00 and 09:00 UTC (ИТ).
-# Ангары: +1 ч (22 и 10 UTC). Оборудование/станки: +2 ч (23 и 11 UTC) — run-equipment-parser-on-server.yml.
-# ИТ: поиск без рубрикатора industries (семантика + blacklist); industries только через env/JSON.
-#
-# If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
-# service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained
-# PAT, read-only on this repo) — workflow will set origin URL before pull.
-#
-# "dubious ownership": Administrators own C:\tender_it but git runs as NETWORK SERVICE — each git uses -c safe.directory=...
-
-name: Run tender parser on server
+name: Run equipment parser on server
 
 on:
   schedule:
-    - cron: '0 21 * * *'
-    - cron: '0 9 * * *'
+    - cron: '0 23 * * *'
+    - cron: '0 11 * * *'
   workflow_dispatch:
 
 defaults:
@@ -65,10 +52,14 @@ jobs:
             python -m pip install -q -r requirements.txt
           }
 
-      - name: Run it_parser.py
+      - name: Run equipment_parser.py
+        env:
+          EQUIPMENT_TELEGRAM_CHAT_ID: ${{ secrets.EQUIPMENT_TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          EQUIPMENT_TELEGRAM_BOT_TOKEN: ${{ secrets.EQUIPMENT_TELEGRAM_BOT_TOKEN }}
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
-          python it_parser.py
+          python equipment_parser.py
 
       - name: Log schedule completion (UTC) on server
         if: always()
@@ -76,5 +67,5 @@ jobs:
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           $rid = '${{ github.run_id }}'
-          $line = ('{0:u} run-parser-on-server finished run_id={1}' -f [datetime]::UtcNow, $rid)
-          Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule.log') -Value $line
+          $line = ('{0:u} run-equipment-parser-on-server finished run_id={1}' -f [datetime]::UtcNow, $rid)
+          Add-Content -LiteralPath (Join-Path $env:TENDER_IT_DIR 'logs\gh-actions-schedule-equipment.log') -Value $line
