@@ -796,7 +796,8 @@ def _load_dotenv_if_present(script_dir: str) -> None:
                 name, _, val = line.partition("=")
                 name = name.strip()
                 val = val.strip().strip('"').strip("'")
-                if name and name not in os.environ:
+                # Пустая переменная из GitHub Actions (секрет не задан) не должна блокировать .env на сервере.
+                if name and (name not in os.environ or not str(os.environ.get(name, "")).strip()):
                     os.environ[name] = val
     except OSError:
         print(f"  ⚠️ Не удалось прочитать {path}")
