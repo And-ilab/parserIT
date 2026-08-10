@@ -8,6 +8,10 @@
 # Ангары: +1 ч (22 и 10 UTC). Оборудование/станки: +2 ч (23 и 11 UTC) — run-equipment-parser-on-server.yml.
 # ИТ: поиск без рубрикатора industries (семантика + blacklist); industries только через env/JSON.
 #
+# If Telegram stops and there are NO new schedule runs for days: check Actions → this workflow.
+# Public repos auto-disable cron after ~60 days without a push (state: disabled_inactivity).
+# Fix: Enable workflow, then Run workflow. Keepalive: keepalive-repo-activity.yml (monthly push).
+#
 # If jobs fail in ~10s: open the failed run log. Common fix for private repos: the runner
 # service (NETWORK SERVICE) has no Git credentials. Add repo secret GH_PULL_PAT (fine-grained
 # PAT, read-only on this repo) — workflow will set origin URL before pull.

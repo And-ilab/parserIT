@@ -1,0 +1,3 @@
+# Placeholder updated by keepalive-repo-activity.yml (monthly).
+# Do not delete: pushes reset GitHub's 60-day scheduled-workflow inactivity timer.
+2026-08-10T00:00:00Z

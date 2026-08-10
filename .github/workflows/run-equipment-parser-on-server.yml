@@ -1,6 +1,10 @@
 # Станки, линии, технологическое оборудование — отдельная Telegram-группа.
 # Расписание: +1 ч после ангаров (+2 ч после ИТ) → ~02:00 и ~14:00 Минск (23:00 и 11:00 UTC).
 #
+# Если нет schedule-run много дней: Actions → этот workflow может быть Disabled
+# (disabled_inactivity на public repo без push ~60 дней). Enable workflow + Run.
+# Keepalive: .github/workflows/keepalive-repo-activity.yml
+#
 name: Run equipment parser on server
 
 on:

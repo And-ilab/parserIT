@@ -1,6 +1,10 @@
 # То же окружение, что и для ИТ (C:\tender_it, self-hosted Windows runner).
 # Расписание: +1 ч после ИТ — ~01:00 и ~13:00 Минск (22:00 и 10:00 UTC). Оборудование: +1 ч после ангаров.
 #
+# Если нет schedule-run много дней: Actions → этот workflow может быть Disabled
+# (disabled_inactivity на public repo без push ~60 дней). Enable workflow + Run.
+# Keepalive: .github/workflows/keepalive-repo-activity.yml
+#
 name: Run angar parser on server
 
 on:
