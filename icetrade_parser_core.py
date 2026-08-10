@@ -49,13 +49,129 @@ _DEFAULT_CHAT_ID_FALLBACK = "-1001872277668"
 
 BASE_URL = "https://icetrade.by"
 SEARCH_URL = "https://icetrade.by/search/auctions"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://icetrade.by/",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 # По умолчанию для профиля it (рабочая строка с icetrade; совпадает с прежним it_parser.py)
 DEFAULT_IT_INDUSTRIES = "16/17/18/105.106-115/116.117-122/179/370.371-387"
 
 _extra_params_cache_by_profile_id: dict[str, dict[str, object]] | None = None  # keyed by env path string
 _logged_industry_mode: dict[str, bool] = {}
+_http_session: requests.Session | None = None
+
+
+class IcetradeFetchLock:
+    """Простой file-lock: на self-hosted один процесс ходит на icetrade (анти-WAF)."""
+
+    def __init__(self, script_dir: str, profile_id: str):
+        self.path = os.path.join(script_dir, "logs", "icetrade_fetch.lock")
+        self.profile_id = profile_id
+        self._fh = None
+
+    def acquire(self, wait_sec: float = 900.0) -> bool:
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        deadline = time.time() + wait_sec
+        while time.time() < deadline:
+            try:
+                # Windows: O_EXCL atomic create
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                self._fh = os.fdopen(fd, "w", encoding="utf-8")
+                self._fh.write(f"{os.getpid()}\t{self.profile_id}\t{_utc_ts()}\n")
+                self._fh.flush()
+                return True
+            except FileExistsError:
+                # stale lock > 45 мин — снять
+                try:
+                    age = time.time() - os.path.getmtime(self.path)
+                    if age > 45 * 60:
+                        print(f"  ⚠️ Снимаем протухший lock ({age/60:.0f} мин): {self.path}")
+                        os.remove(self.path)
+                        continue
+                except OSError:
+                    pass
+                print("  ⏳ Ждём освобождения icetrade lock (другой парсер ещё работает)…")
+                time.sleep(15 + random.uniform(0, 5))
+            except OSError as e:
+                print(f"  ⚠️ Lock недоступен ({e}), продолжаем без блокировки")
+                return True
+        print("  ❌ Не дождались icetrade lock")
+        return False
+
+    def release(self) -> None:
+        try:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
+        except OSError:
+            pass
+        try:
+            if os.path.exists(self.path):
+                # удаляем только свой, если содержимое наше — упрощённо: всегда remove после успешного acquire
+                os.remove(self.path)
+        except OSError:
+            pass
+
+
+def _request_timeout() -> float:
+    try:
+        return float(os.environ.get("ICETRADE_HTTP_TIMEOUT", "45"))
+    except ValueError:
+        return 45.0
+
+
+def _request_retries() -> int:
+    try:
+        return max(1, int(os.environ.get("ICETRADE_HTTP_RETRIES", "5")))
+    except ValueError:
+        return 5
+
+
+def get_http_session() -> requests.Session:
+    """Один Session на процесс: cookies + браузерные заголовки (WAF/антибот icetrade)."""
+    global _http_session
+    if _http_session is not None:
+        return _http_session
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    s.verify = False
+    try:
+        s.get(BASE_URL + "/", timeout=_request_timeout())
+    except Exception as e:
+        print(f"  ⚠️ Прогрев {BASE_URL}/ не удался: {e}")
+    _http_session = s
+    return s
+
+
+def _response_looks_blocked(status_code: int, text: str) -> str | None:
+    """Вернуть причину блокировки/пустого ответа или None если страница похожа на выдачу."""
+    low = (text or "").lower()
+    if status_code == 403:
+        return "HTTP 403 Forbidden"
+    if status_code == 429:
+        return "HTTP 429 Too Many Requests"
+    if status_code >= 500:
+        return f"HTTP {status_code}"
+    if "access denied" in low or "доступ запрещ" in low:
+        return "страница Access denied"
+    if "cf-browser-verification" in low or "just a moment" in low:
+        return "Cloudflare challenge"
+    # Успешный поиск всегда содержит список аукционов (даже пустой).
+    if "auctions-list" not in low and 'id="auctions"' not in low and "auctions_list" not in low:
+        # короткие заглушки WAF часто без таблицы
+        if len(text) < 8000 or "notfound" in low:
+            return "нет #auctions-list в HTML (похоже на блок/заглушку)"
+    return None
 
 
 class Tee:
@@ -358,14 +474,50 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
     base = build_base_search_params(cf, ct)
     extra = icetrade_search_extra_params(rc.profile, rc.script_dir)
     params: dict[str, object] = {**base, **extra, "p": page_num}
-    try:
-        r = requests.get(SEARCH_URL, headers=HEADERS, params=params, timeout=20, verify=False)
-        r.raise_for_status()
-        print(f"  стр. {page_num} загружена")
-        return BeautifulSoup(r.text, "html.parser")
-    except Exception as e:
-        print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
-        return None
+    session = get_http_session()
+    retries = _request_retries()
+    timeout = _request_timeout()
+    last_err = ""
+    for attempt in range(retries):
+        try:
+            r = session.get(SEARCH_URL, params=params, timeout=timeout)
+            blocked = _response_looks_blocked(r.status_code, r.text)
+            if blocked:
+                last_err = blocked
+                # 403/429 — подождать и повторить (часто WAF после серии запросов)
+                if attempt + 1 < retries:
+                    delay = min(60.0, (2 ** attempt) + random.uniform(0.5, 2.0))
+                    print(
+                        f"  ⚠️ стр. {page_num}: {blocked}; повтор {attempt + 2}/{retries} через {delay:.1f}с"
+                    )
+                    time.sleep(delay)
+                    # сброс cookies / новый прогрев при серии 403
+                    if r.status_code in (403, 429) or "access denied" in blocked.lower():
+                        global _http_session
+                        _http_session = None
+                        session = get_http_session()
+                    continue
+                print(f"  ❌ Ошибка загрузки страницы {page_num}: {blocked}")
+                return None
+            r.raise_for_status()
+            print(f"  стр. {page_num} загружена")
+            return BeautifulSoup(r.text, "html.parser")
+        except requests.exceptions.RequestException as e:
+            last_err = f"{type(e).__name__}: {e}"
+            if attempt + 1 < retries:
+                delay = min(60.0, (2 ** attempt) + random.uniform(0.5, 2.0))
+                print(
+                    f"  ⚠️ стр. {page_num}: {last_err}; повтор {attempt + 2}/{retries} через {delay:.1f}с"
+                )
+                time.sleep(delay)
+                continue
+            print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err}")
+            return None
+        except Exception as e:
+            print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
+            return None
+    print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err or 'unknown'}")
+    return None
 
 
 def load_sent_ids(path: str) -> set[str]:
@@ -605,6 +757,9 @@ def build_telegram_chunks(
 def parse_tenders(soup: BeautifulSoup, profile: IcetradeParserProfile):
     tenders = []
     rows = soup.select("#auctions-list tr")
+    if not rows:
+        # запасной селектор на случай смены разметки
+        rows = soup.select("table.auctions tr, table#auctions tr, .auctions-list tr")
     if len(rows) <= 1:
         return tenders
     for row in rows[1:]:
@@ -650,7 +805,48 @@ def run_parser_cycle(
     tmpl_empty: Callable[..., str],
     tmpl_single: Callable[..., str],
     tmpl_part: Callable[..., str],
-) -> None:
+) -> bool:
+    """Вернуть True если цикл завершён штатно (в т.ч. реально 0 лотов), False при сбое загрузки."""
+    profile = rc.profile
+
+    # Не стартовать три профиля в одну секунду — WAF icetrade режет пачку запросов.
+    try:
+        stagger = float(os.environ.get("ICETRADE_START_STAGGER_SEC", "0") or "0")
+    except ValueError:
+        stagger = 0.0
+    if stagger <= 0:
+        stagger = random.uniform(0.5, 8.0)
+    if stagger > 0:
+        print(f"⏳ Пауза старта {stagger:.1f}с (анти-WAF)")
+        time.sleep(stagger)
+
+    fetch_lock = IcetradeFetchLock(rc.script_dir, profile.id)
+    if not fetch_lock.acquire():
+        err_msg = (
+            f"⚠️ {mention}\n"
+            f"<b>Парсер [{profile.id}] не запустился</b>\n"
+            f"Другой профиль ещё ходит на icetrade (lock timeout)."
+        )
+        telegram_warmup(rc.bot_token)
+        send_telegram(rc.bot_token, rc.chat_id, err_msg, rc.telegram_send_retries)
+        return False
+
+    try:
+        return _run_parser_cycle_locked(
+            rc, mention, tmpl_empty=tmpl_empty, tmpl_single=tmpl_single, tmpl_part=tmpl_part
+        )
+    finally:
+        fetch_lock.release()
+
+
+def _run_parser_cycle_locked(
+    rc: RunnerConfig,
+    mention: str,
+    *,
+    tmpl_empty: Callable[..., str],
+    tmpl_single: Callable[..., str],
+    tmpl_part: Callable[..., str],
+) -> bool:
     cf, ct = get_date_range(rc.days_back)
     sent_path = os.path.join(rc.script_dir, rc.profile.sent_ids_filename)
     profile = rc.profile
@@ -666,6 +862,7 @@ def run_parser_cycle(
     all_new_tenders = []
     seen_in_session = set()
     stopped_early_bad_page = False
+    pages_ok = 0
 
     for page in range(1, rc.max_pages + 1):
         print(f"\n--- Страница {page} ---")
@@ -675,6 +872,7 @@ def run_parser_cycle(
             stopped_early_bad_page = True
             break
 
+        pages_ok += 1
         tenders = parse_tenders(soup, profile)
         if tenders:
             new_on_page = 0
@@ -690,12 +888,43 @@ def run_parser_cycle(
                 print(f"  ✅ НОВЫЙ: {tender_id} - {t['title'][:50]}")
             print(f"  Найдено новых: {new_on_page}")
         else:
+            # Отличить «страница без совпадений» от «разметка сломалась»
+            n_rows = len(soup.select("#auctions-list tr"))
+            if n_rows <= 1:
+                n_rows = len(
+                    soup.select("table.auctions tr, table#auctions tr, .auctions-list tr")
+                )
+            if n_rows <= 1:
+                print("  ⚠️ В HTML нет строк аукционов — возможно блок/смена вёрстки")
             print("  ❌ Нет подходящих")
 
-        time.sleep(random.uniform(1.5, 2.5))
+        time.sleep(random.uniform(2.0, 3.5))
 
     xfer_new = len(all_new_tenders)
     print(f"\n📊 ИТОГО новых ({profile.tmpl_done_count_label}): {xfer_new}")
+
+    # Сбой сети/WAF на первой же странице — не врать «тендеров нет».
+    if stopped_early_bad_page and pages_ok == 0:
+        err_msg = (
+            f"⚠️ {mention}\n"
+            f"<b>Парсер [{profile.id}] не смог загрузить icetrade.by</b>\n"
+            f"Ошибка сети/доступа (timeout/403/WAF). Лоты не проверялись.\n"
+            f"Повторите запуск позже; не запускайте все 3 профиля одновременно."
+        )
+        telegram_warmup(rc.bot_token)
+        send_telegram(rc.bot_token, rc.chat_id, err_msg, rc.telegram_send_retries)
+        append_transfer_journal(
+            rc.script_dir,
+            "parser_cycle_summary",
+            profile=profile.id,
+            new_candidates=0,
+            stopped_early_bad_page=True,
+            pages_ok=0,
+            telegram_ok=False,
+            fetch_failed=True,
+        )
+        print("❌ Цикл прерван: icetrade недоступен с первой страницы — «пусто» в Telegram не считаем успехом.")
+        return False
 
     telegram_warmup(rc.bot_token)
 
@@ -705,7 +934,13 @@ def run_parser_cycle(
     xfer_delivery_ok = False
 
     if not all_new_tenders:
-        msg = tmpl_empty(mention=mention, days_back=rc.days_back) + kw_footer
+        note = ""
+        if stopped_early_bad_page:
+            note = (
+                f"\n⚠️ Загрузка оборвалась после стр. {pages_ok} (сеть/403). "
+                f"Ниже — только то, что успели проверить."
+            )
+        msg = tmpl_empty(mention=mention, days_back=rc.days_back) + note + kw_footer
         xfer_chunks_total = 1
         xfer_delivery_ok = send_telegram(rc.bot_token, rc.chat_id, msg, rc.telegram_send_retries)
         append_transfer_journal(
@@ -715,6 +950,8 @@ def run_parser_cycle(
             mode="empty",
             ok=xfer_delivery_ok,
             tg_chars=len(msg),
+            stopped_early_bad_page=stopped_early_bad_page,
+            pages_ok=pages_ok,
         )
         if xfer_delivery_ok:
             print("📭 Сообщение в Telegram доставлено (тендеров нет)")
@@ -768,17 +1005,15 @@ def run_parser_cycle(
         profile=profile.id,
         new_candidates=xfer_new,
         stopped_early_bad_page=stopped_early_bad_page,
+        pages_ok=pages_ok,
         telegram_ok=xfer_delivery_ok,
         telegram_chunks=xfer_chunks_total if xfer_chunks_total is not None else 0,
         telegram_ids_saved=xfer_saved_ids,
         days_back=rc.days_back,
         max_pages=rc.max_pages,
     )
-    if not transfer_log_disabled():
-        xfer_leaf = (
-            os.path.basename(os.environ.get("ICETRADE_TRANSFER_LOG") or "").strip()
-            or "logs/telegram_transfer.log"
-        )
+    return not stopped_early_bad_page or xfer_new > 0
+
 
 def _load_dotenv_if_present(script_dir: str) -> None:
     """Опционально: .env рядом со скриптами (в .gitignore), только если переменная ещё не задана."""
@@ -868,11 +1103,16 @@ def cli_main(profile: IcetradeParserProfile) -> None:
 
     try:
         try:
-            run_parser_cycle(rc, mention, tmpl_empty=tmpl_empty, tmpl_single=tmpl_single, tmpl_part=tmpl_part)
+            ok = run_parser_cycle(
+                rc, mention, tmpl_empty=tmpl_empty, tmpl_single=tmpl_single, tmpl_part=tmpl_part
+            )
         except Exception:
             print("\n❌ КРИТИЧЕСКАЯ ОШИБКА:")
             print(traceback.format_exc())
-        print("\n✅ Готово!")
+            ok = False
+        print("\n✅ Готово!" if ok else "\n❌ Завершено с ошибкой загрузки icetrade.")
+        if not ok:
+            sys.exit(1)
     finally:
         # Вернуть stdout/stderr до закрытия лога — иначе при выходе из интерпретатора flush в закрытый файл.
         try:
