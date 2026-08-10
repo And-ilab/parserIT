@@ -1,0 +1,50 @@
+# Prevents GitHub from auto-disabling scheduled workflows on a public repo.
+#
+# Public repos: schedule workflows are set to disabled_inactivity after ~60 days
+# without a push (commits from Actions schedules do not count as repo activity).
+# Symptom: парсеры «молчат», в Actions у workflow статус Disabled, новых schedule-run нет.
+#
+# This job pushes a tiny timestamp file once a month so the 60-day timer resets.
+# Needs: Settings → Actions → General → Workflow permissions → Read and write.
+#
+# If schedules are already Disabled: Actions → выберите workflow → Enable workflow,
+# затем Run workflow (или дождитесь cron). Один push в main тоже сбрасывает таймер,
+# но Enable всё равно нужен вручную.
+
+name: Keepalive repo activity
+
+on:
+  schedule:
+    # ~1st of each month 06:00 UTC
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Touch keepalive stamp and push
+        env:
+          # Avoid triggering loops / noise from other bots if any
+          HUSKY: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p .github
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/keepalive-stamp.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/keepalive-stamp.txt
+          if git diff --cached --quiet; then
+            echo 'No change to commit'
+            exit 0
+          fi
+          git commit -m "chore: keepalive stamp (prevent Actions schedule inactivity disable)"
+          git push origin HEAD:${{ github.ref_name }}
