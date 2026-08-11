@@ -132,9 +132,10 @@ def _request_timeout() -> float:
 
 def _request_retries() -> int:
     try:
-        return max(1, int(os.environ.get("ICETRADE_HTTP_RETRIES", "5")))
+        # Для 429 лучше меньше попыток, но с длинными паузами (см. _retry_after_seconds).
+        return max(1, int(os.environ.get("ICETRADE_HTTP_RETRIES", "4")))
     except ValueError:
-        return 5
+        return 4
 
 
 def get_http_session() -> requests.Session:
@@ -434,6 +435,17 @@ def icetrade_search_extra_params(profile: IcetradeParserProfile, script_dir: str
 
 
 def build_base_search_params(created_from: str, created_to: str) -> dict[str, str]:
+    # Больше лотов на страницу = меньше HTTP-запросов (реже 429 от icetrade).
+    on_page = os.environ.get("ICETRADE_ON_PAGE", "50").strip() or "50"
+    try:
+        n = int(on_page)
+        if n < 10:
+            n = 10
+        if n > 100:
+            n = 100
+        on_page = str(n)
+    except ValueError:
+        on_page = "50"
     return {
         "search_text": "",
         "sbm": "1",
@@ -463,10 +475,67 @@ def build_base_search_params(created_from: str, created_to: str) -> dict[str, st
         "r[6]": "6",
         "r[5]": "5",
         "sort": "num:desc",
-        "onPage": "20",
+        "onPage": on_page,
         "created_from": created_from,
         "created_to": created_to,
     }
+
+
+def _rate_limit_cooldown_path(script_dir: str) -> str:
+    return os.path.join(script_dir, "logs", "icetrade_rate_limit_until.txt")
+
+
+def _read_rate_limit_until(script_dir: str) -> float:
+    path = _rate_limit_cooldown_path(script_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _write_rate_limit_cooldown(script_dir: str, seconds: float) -> None:
+    until = time.time() + max(60.0, seconds)
+    path = _rate_limit_cooldown_path(script_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{until:.0f}\n")
+        print(f"  🧊 Rate-limit cooldown до UTC {datetime.fromtimestamp(until, timezone.utc).strftime('%H:%M:%S')} (~{seconds/60:.0f} мин)")
+    except OSError as e:
+        print(f"  ⚠️ Не записали cooldown: {e}")
+
+
+def _wait_rate_limit_cooldown(script_dir: str) -> None:
+    until = _read_rate_limit_until(script_dir)
+    now = time.time()
+    if until <= now:
+        return
+    wait = until - now
+    # В GitHub Actions не ждём часами — если cooldown > 20 мин, выходим сразу (следующий schedule).
+    if wait > 20 * 60:
+        raise RuntimeError(
+            f"icetrade rate-limit cooldown ещё {wait/60:.0f} мин "
+            f"(до UTC {datetime.fromtimestamp(until, timezone.utc).strftime('%H:%M')}). "
+            "Пропуск запуска, чтобы не усугублять 429."
+        )
+    print(f"  ⏳ Ждём снятие rate-limit ещё {wait:.0f}с…")
+    time.sleep(wait + random.uniform(1.0, 3.0))
+
+
+def _retry_after_seconds(response: requests.Response, attempt: int, is_429: bool) -> float:
+    """Пауза перед повтором: для 429 — минуты, иначе короткий backoff."""
+    if is_429:
+        ra = response.headers.get("Retry-After") if response is not None else None
+        if ra:
+            try:
+                return max(60.0, float(ra))
+            except ValueError:
+                pass
+        # 2, 4, 8, 12 мин — короткие ретраи только раскачивают 429
+        ladder = [120.0, 240.0, 480.0, 720.0, 900.0]
+        return ladder[min(attempt, len(ladder) - 1)] + random.uniform(5.0, 20.0)
+    return min(60.0, (2 ** attempt) + random.uniform(0.5, 2.0))
 
 
 def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
@@ -474,6 +543,11 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
     base = build_base_search_params(cf, ct)
     extra = icetrade_search_extra_params(rc.profile, rc.script_dir)
     params: dict[str, object] = {**base, **extra, "p": page_num}
+    try:
+        _wait_rate_limit_cooldown(rc.script_dir)
+    except RuntimeError as e:
+        print(f"  ❌ {e}")
+        return None
     session = get_http_session()
     retries = _request_retries()
     timeout = _request_timeout()
@@ -484,15 +558,17 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
             blocked = _response_looks_blocked(r.status_code, r.text)
             if blocked:
                 last_err = blocked
-                # 403/429 — подождать и повторить (часто WAF после серии запросов)
+                is_429 = r.status_code == 429 or "429" in blocked
+                if is_429:
+                    _write_rate_limit_cooldown(rc.script_dir, _retry_after_seconds(r, attempt, True))
                 if attempt + 1 < retries:
-                    delay = min(60.0, (2 ** attempt) + random.uniform(0.5, 2.0))
+                    delay = _retry_after_seconds(r, attempt, is_429)
                     print(
-                        f"  ⚠️ стр. {page_num}: {blocked}; повтор {attempt + 2}/{retries} через {delay:.1f}с"
+                        f"  ⚠️ стр. {page_num}: {blocked}; повтор {attempt + 2}/{retries} через {delay:.0f}с"
                     )
                     time.sleep(delay)
-                    # сброс cookies / новый прогрев при серии 403
-                    if r.status_code in (403, 429) or "access denied" in blocked.lower():
+                    # Сессию сбрасываем только на жёсткий 403/Access denied (не на 429).
+                    if r.status_code == 403 or "access denied" in blocked.lower():
                         global _http_session
                         _http_session = None
                         session = get_http_session()
@@ -505,7 +581,7 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
         except requests.exceptions.RequestException as e:
             last_err = f"{type(e).__name__}: {e}"
             if attempt + 1 < retries:
-                delay = min(60.0, (2 ** attempt) + random.uniform(0.5, 2.0))
+                delay = min(90.0, (2 ** attempt) * 2 + random.uniform(1.0, 3.0))
                 print(
                     f"  ⚠️ стр. {page_num}: {last_err}; повтор {attempt + 2}/{retries} через {delay:.1f}с"
                 )
@@ -863,6 +939,11 @@ def _run_parser_cycle_locked(
     seen_in_session = set()
     stopped_early_bad_page = False
     pages_ok = 0
+    empty_streak = 0
+    try:
+        empty_stop = int(os.environ.get("ICETRADE_EMPTY_PAGE_STOP", "30"))
+    except ValueError:
+        empty_stop = 30
 
     for page in range(1, rc.max_pages + 1):
         print(f"\n--- Страница {page} ---")
@@ -875,6 +956,7 @@ def _run_parser_cycle_locked(
         pages_ok += 1
         tenders = parse_tenders(soup, profile)
         if tenders:
+            empty_streak = 0
             new_on_page = 0
             for t in tenders:
                 tender_id = extract_tender_id(t["url"])
@@ -887,6 +969,8 @@ def _run_parser_cycle_locked(
                 new_on_page += 1
                 print(f"  ✅ НОВЫЙ: {tender_id} - {t['title'][:50]}")
             print(f"  Найдено новых: {new_on_page}")
+            if new_on_page == 0:
+                empty_streak += 1
         else:
             # Отличить «страница без совпадений» от «разметка сломалась»
             n_rows = len(soup.select("#auctions-list tr"))
@@ -897,19 +981,34 @@ def _run_parser_cycle_locked(
             if n_rows <= 1:
                 print("  ⚠️ В HTML нет строк аукционов — возможно блок/смена вёрстки")
             print("  ❌ Нет подходящих")
+            empty_streak += 1
 
-        time.sleep(random.uniform(2.0, 3.5))
+        if empty_stop > 0 and empty_streak >= empty_stop:
+            print(
+                f"⏹ Стоп: {empty_streak} страниц подряд без новых лотов профиля "
+                f"(ICETRADE_EMPTY_PAGE_STOP={empty_stop}) — экономим лимит icetrade."
+            )
+            break
+
+        time.sleep(random.uniform(3.5, 6.0))
 
     xfer_new = len(all_new_tenders)
     print(f"\n📊 ИТОГО новых ({profile.tmpl_done_count_label}): {xfer_new}")
 
     # Сбой сети/WAF на первой же странице — не врать «тендеров нет».
     if stopped_early_bad_page and pages_ok == 0:
+        cooldown_left = max(0.0, _read_rate_limit_until(rc.script_dir) - time.time())
+        rate_hint = ""
+        if cooldown_left > 0:
+            rate_hint = (
+                f"\nСейчас активен rate-limit cooldown (~{cooldown_left/60:.0f} мин). "
+                "Не перезапускайте вручную пачкой — подождите следующий schedule."
+            )
         err_msg = (
             f"⚠️ {mention}\n"
             f"<b>Парсер [{profile.id}] не смог загрузить icetrade.by</b>\n"
-            f"Ошибка сети/доступа (timeout/403/WAF). Лоты не проверялись.\n"
-            f"Повторите запуск позже; не запускайте все 3 профиля одновременно."
+            f"Ошибка сети/доступа (часто <b>HTTP 429</b> rate-limit / 403/WAF). "
+            f"Лоты не проверялись.{rate_hint}"
         )
         telegram_warmup(rc.bot_token)
         send_telegram(rc.bot_token, rc.chat_id, err_msg, rc.telegram_send_retries)
@@ -1055,7 +1154,8 @@ def cli_main(profile: IcetradeParserProfile) -> None:
         )
         sys.exit(1)
     days_back = int(os.environ.get("DAYS_BACK", "30"))
-    max_pages = int(os.environ.get("MAX_PAGES", "120"))
+    # 50 лотов/стр × 40 стр ≈ 2000 лотов при ~40 запросах (раньше 20×120=2400 при 120 запросах → 429).
+    max_pages = int(os.environ.get("MAX_PAGES", "40"))
     retries = int(os.environ.get("TELEGRAM_SEND_RETRIES", "6"))
     tel_limit = int(os.environ.get("TELEGRAM_SAFE_TEXT_LIMIT", "3800"))
 
