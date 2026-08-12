@@ -138,6 +138,55 @@ def _request_retries() -> int:
         return 4
 
 
+def _search_url_with_params(params: dict[str, object]) -> str:
+    from urllib.parse import urlencode
+
+    return SEARCH_URL + "?" + urlencode(params, doseq=True)
+
+
+def _fetch_html_powershell(url: str, timeout: float) -> str:
+    import subprocess
+
+    sec = max(1, int(timeout))
+    escaped = url.replace("'", "''")
+    cmd = f"(Invoke-WebRequest -Uri '{escaped}' -UseBasicParsing -TimeoutSec {sec}).Content"
+    r = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout + 15,
+        check=False,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or f"exit {r.returncode}"
+        raise RuntimeError(err)
+    html = r.stdout or ""
+    if len(html) < 100:
+        raise RuntimeError("empty HTML from PowerShell")
+    return html
+
+
+def _get_page_powershell_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
+    if os.environ.get("ICETRADE_NO_POWERSHELL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    if sys.platform != "win32":
+        return None
+    url = _search_url_with_params(params)
+    try:
+        html = _fetch_html_powershell(url, timeout)
+        blocked = _response_looks_blocked(200, html)
+        if blocked:
+            print(f"  ❌ PowerShell fallback стр. {page_num}: {blocked}")
+            return None
+        print(f"  стр. {page_num} загружена (powershell)")
+        return BeautifulSoup(html, "html.parser")
+    except Exception as e:
+        print(f"  ❌ PowerShell fallback стр. {page_num}: {e}")
+        return None
+
+
 def get_http_session() -> requests.Session:
     """Один Session на процесс: cookies + браузерные заголовки (WAF/антибот icetrade)."""
     global _http_session
@@ -574,6 +623,9 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
                         session = get_http_session()
                     continue
                 print(f"  ❌ Ошибка загрузки страницы {page_num}: {blocked}")
+                fb = _get_page_powershell_fallback(page_num, params, timeout)
+                if fb is not None:
+                    return fb
                 return None
             r.raise_for_status()
             print(f"  стр. {page_num} загружена")
@@ -588,11 +640,20 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
                 time.sleep(delay)
                 continue
             print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err}")
+            fb = _get_page_powershell_fallback(page_num, params, timeout)
+            if fb is not None:
+                return fb
             return None
         except Exception as e:
             print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
+            fb = _get_page_powershell_fallback(page_num, params, timeout)
+            if fb is not None:
+                return fb
             return None
     print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err or 'unknown'}")
+    fb = _get_page_powershell_fallback(page_num, params, timeout)
+    if fb is not None:
+        return fb
     return None
 
 
