@@ -65,8 +65,10 @@ DEFAULT_SEARCH_QUERIES = (
     "автоматизированная система",
 )
 
-REG_NUM_RE = re.compile(r"(?:№\s*)?(\d{18,19})")
-REG_IN_URL_RE = re.compile(r"regNumber=(\d{18,19})", re.I)
+# 44-ФЗ обычно 19 цифр; 223-ФЗ часто короче (например 32616323901).
+REG_NUM_RE = re.compile(r"(?:№\s*)?(\d{8,25})")
+REG_IN_URL_RE = re.compile(r"regNumber=(\d{8,25})", re.I)
+ONCLICK_URL_RE = re.compile(r"""['\"](/(?:epz|223)[^'\"]+)['\"]""")
 
 _http_session: requests.Session | None = None
 
@@ -237,11 +239,13 @@ def absolute_url(href: str | None) -> str:
     if not href:
         return ""
     href = href.strip()
+    if href.lower().startswith(("javascript:", "mailto:")) or href == "#":
+        return ""
     if href.startswith("//"):
         return "https:" + href
-    if href.startswith("http"):
+    if href.startswith("http://") or href.startswith("https://"):
         return href
-    return urljoin(BASE_URL + "/", href.lstrip("/"))
+    return urljoin(BASE_URL + "/", href)
 
 
 def format_zakupki_price(price_str: str) -> str:
@@ -498,21 +502,78 @@ def _parse_dates(card) -> tuple[str, str]:
     return date_pub, date_end
 
 
+def _href_from_anchor(anchor) -> str:
+    """Живой href номера извещения (красная рамка «№ …»), не выдуманный ea44."""
+    if anchor is None:
+        return ""
+    raw = (anchor.get("href") or "").strip()
+    url = absolute_url(raw)
+    if url and _looks_like_notice_url(url):
+        return url
+    onclick = anchor.get("onclick") or ""
+    m = ONCLICK_URL_RE.search(onclick)
+    if m:
+        url = absolute_url(m.group(1))
+        if url:
+            return url
+    return url if url and not raw.lower().startswith("javascript:") else ""
+
+
+def _looks_like_notice_url(url: str) -> bool:
+    low = url.lower()
+    if "/epz/organization" in low or "/epz/eruz" in low:
+        return False
+    return (
+        "regnumber=" in low
+        or "/epz/order/notice/" in low
+        or "/223/purchase/" in low
+        or "/epz/order/notice223" in low
+    )
+
+
+def _pick_notice_anchor(card):
+    """Ссылка из блока номера закупки — та, что в красной рамке на выдаче ЕИС."""
+    for sel in (
+        ".registry-entry__header-mid__number a[href]",
+        ".registry-entry__header-mid__number a",
+        "a.registry-entry__header-mid__number[href]",
+    ):
+        a = card.select_one(sel)
+        if a:
+            return a
+    for a in card.select("a[href]"):
+        href = (a.get("href") or "")
+        text = _norm_text(a)
+        if "regNumber=" in href or "/epz/order/notice/" in href or "/223/purchase/" in href:
+            if "№" in text or REG_NUM_RE.search(text) or "regNumber=" in href:
+                if "/epz/organization" not in href:
+                    return a
+    return None
+
+
+def _fallback_notice_url(registry: str, law: str) -> str:
+    qs = urlencode({"regNumber": registry})
+    law_l = (law or "").lower()
+    if "223" in law_l:
+        return f"{BASE_URL}/epz/order/notice/notice223/common-info.html?{qs}"
+    if "котиров" in law_l:
+        return f"{BASE_URL}/epz/order/notice/ok20/view/common-info.html?{qs}"
+    if "аукцион" in law_l:
+        return f"{BASE_URL}/epz/order/notice/ea44/view/common-info.html?{qs}"
+    return f"{BASE_URL}/epz/order/extendedsearch/results.html?searchString={registry}"
+
+
 def parse_card(card) -> dict | None:
-    num_a = card.select_one(".registry-entry__header-mid__number a, a[href*='regNumber=']")
-    href = ""
+    num_a = _pick_notice_anchor(card)
+    href = _href_from_anchor(num_a)
     registry = ""
     if num_a:
-        href = absolute_url(num_a.get("href"))
         registry = extract_tender_id(href, _norm_text(num_a)) or ""
     if not registry:
         raw_num = _norm_text(card.select_one(".registry-entry__header-mid__number"))
         registry = extract_tender_id(href, raw_num) or ""
     if not registry:
         return None
-    if not href:
-        qs = urlencode({"regNumber": registry})
-        href = f"{BASE_URL}/epz/order/notice/ea44/view/common-info.html?{qs}"
 
     title_el = card.select_one(
         ".registry-entry__body-value.registry-entry__body-value-height, "
@@ -531,6 +592,8 @@ def parse_card(card) -> dict | None:
     )
     if not law:
         law = _norm_text(card.select_one(".registry-entry__header-top"))
+    if not href:
+        href = _fallback_notice_url(registry, law)
     date_pub, date_end = _parse_dates(card)
 
     return {
