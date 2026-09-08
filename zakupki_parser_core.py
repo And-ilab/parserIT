@@ -24,6 +24,7 @@ from bs4 import BeautifulSoup
 from icetrade_parser_core import (
     HEADER_RESERVE_DEFAULT,
     Tee,
+    _DEFAULT_BOT_TOKEN_FALLBACK,
     _load_dotenv_if_present,
     append_transfer_journal,
     get_date_range,
@@ -34,6 +35,9 @@ from icetrade_parser_core import (
     send_telegram,
     telegram_warmup,
 )
+
+# FinVat Sales/IT Россия (MyChatInfoBot). Переопределение: ZAKUPKI_TELEGRAM_CHAT_ID.
+DEFAULT_ZAKUPKI_CHAT_ID = "-5385385913"
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -164,11 +168,13 @@ def _env_first(*names: str) -> str:
 
 
 def resolve_bot_token() -> str:
-    return _env_first("ZAKUPKI_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN")
+    return _env_first("ZAKUPKI_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "BOT_TOKEN") or (
+        _DEFAULT_BOT_TOKEN_FALLBACK
+    )
 
 
 def resolve_chat_id() -> str:
-    return _env_first("ZAKUPKI_TELEGRAM_CHAT_ID")
+    return _env_first("ZAKUPKI_TELEGRAM_CHAT_ID") or DEFAULT_ZAKUPKI_CHAT_ID
 
 
 def resolve_mention(profile: ZakupkiParserProfile) -> str:
@@ -796,6 +802,7 @@ def cli_main(profile: ZakupkiParserProfile) -> None:
             "Ссылка-приглашение t.me/+… не подходит как chat_id."
         )
         sys.exit(1)
+    print(f"📬 Telegram-чат ЕИС: {chat}")
     if not bot:
         print("❌ Задайте ZAKUPKI_TELEGRAM_BOT_TOKEN или TELEGRAM_BOT_TOKEN.")
         sys.exit(1)

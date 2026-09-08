@@ -4,10 +4,8 @@
 Семантика как у it_parser.py (KEYWORDS_ROOTS + BLACKLIST).
 Запросы, разбор карточек и отдельный чат — модуль zakupki_parser_core.py.
 
-Целевая группа: FinVat Sales/IT Россия (частная).
-Перед первым запуском добавьте бота (@KoliyaGS_bot) в группу и задайте:
-  ZAKUPKI_TELEGRAM_CHAT_ID=-100xxxxxxxxxx
-  (числовой id; ссылка t.me/+… не подходит).
+Целевая группа: FinVat Sales/IT Россия (частная), chat.id=-5385385913.
+Бот @KoliyaGS_bot должен быть участником. Переопределение: ZAKUPKI_TELEGRAM_CHAT_ID.
 """
 from it_parser import BLACKLIST, KEYWORDS_ROOTS
 from zakupki_parser_core import ZakupkiParserProfile, cli_main
