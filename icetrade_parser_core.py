@@ -106,11 +106,22 @@ class IcetradeFetchLock:
                 self._fh.flush()
                 return True
             except FileExistsError:
-                # stale lock > 45 мин — снять
+                # stale lock > 45 мин или процесс-владелец уже умер — снять
                 try:
                     age = time.time() - os.path.getmtime(self.path)
-                    if age > 45 * 60:
-                        print(f"  ⚠️ Снимаем протухший lock ({age/60:.0f} мин): {self.path}")
+                    owner_dead = False
+                    with open(self.path, encoding="utf-8") as fh:
+                        pid_s = fh.read().split("\t", 1)[0].strip()
+                    if pid_s.isdigit():
+                        try:
+                            os.kill(int(pid_s), 0)
+                        except ProcessLookupError:
+                            owner_dead = True
+                        except PermissionError:
+                            owner_dead = False
+                    if age > 45 * 60 or owner_dead:
+                        why = "процесс завершился" if owner_dead else f"{age/60:.0f} мин"
+                        print(f"  ⚠️ Снимаем протухший lock ({why}): {self.path}")
                         os.remove(self.path)
                         continue
                 except OSError:
