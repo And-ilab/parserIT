@@ -6,6 +6,7 @@ icetrade_industry_params.json
 icetrade_industry_params_angar.json
 icetrade_industry_params_equipment.json
 sent_equipment_ids.txt
+sent_zakupki_it_ids.txt
 
 # Журнал запусков/отправок (создаётся локально или на сервере)
 logs/
