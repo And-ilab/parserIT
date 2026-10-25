@@ -173,7 +173,7 @@ def main() -> int:
     def tmpl_single(**kw: object) -> str:
         return (
             f"{kw.get('mention', mention)}\n"
-            f"📋 <b>Новые тендеры ЕИС (Россия): станки, линии, оборудование — за {kw.get('days_back', days_back)} дней: "
+            f"📋 <b>Новые тендеры ЕИС (Россия): станки, линии, оборудование — за последние {kw.get('days_back', days_back)} дн.: "
             f"{kw.get('total', 0)}</b>\n\n"
         )
 
