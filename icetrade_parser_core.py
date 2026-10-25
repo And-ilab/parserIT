@@ -702,20 +702,33 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
     except RuntimeError as e:
         print(f"  ❌ {e}")
         return None
-    session = get_http_session()
     retries = _request_retries()
     timeout = _request_timeout()
     last_err = ""
+    prefer_curl = sys.platform != "win32" and os.environ.get(
+        "ICETRADE_NO_CURL_FALLBACK", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+    session = None if prefer_curl else get_http_session()
     for attempt in range(retries):
+        if prefer_curl:
+            via_curl = _get_page_curl_fallback(page_num, params, timeout, rc.script_dir)
+            if via_curl is not None:
+                return via_curl
+            last_err = "curl не получил страницу"
+            if attempt + 1 < retries:
+                delay = min(20.0, 3.0 + attempt * 3.0)
+                print(
+                    f"  ⚠️ стр. {page_num}: {last_err}; повтор {attempt + 2}/{retries} через {delay:.0f}с"
+                )
+                time.sleep(delay)
+                continue
+            print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err}")
+            return None
         try:
             r = session.get(SEARCH_URL, params=params, timeout=timeout)
             if _absorb_hg_security_challenge(session, r):
                 r = session.get(SEARCH_URL, params=params, timeout=timeout)
             blocked = _response_looks_blocked(r.status_code, r.text)
-            if blocked and ("403" in blocked or "заглуш" in blocked or "Verification" in (r.text or "")):
-                via_curl = _get_page_curl_fallback(page_num, params, timeout, rc.script_dir)
-                if via_curl is not None:
-                    return via_curl
             if blocked:
                 last_err = blocked
                 is_429 = r.status_code == 429 or "429" in blocked
