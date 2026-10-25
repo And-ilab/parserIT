@@ -66,6 +66,21 @@ HEADERS = {
 # По умолчанию для профиля it (рабочая строка с icetrade; совпадает с прежним it_parser.py)
 DEFAULT_IT_INDUSTRIES = "16/17/18/105.106-115/116.117-122/179/370.371-387"
 
+_HG_SECURITY_RE = re.compile(r"hg-security=([^;\"'\s]+)")
+
+
+def _absorb_hg_security_challenge(session: requests.Session, response: requests.Response) -> bool:
+    """icetrade отдаёт JS-заглушку Verification и cookie hg-security. Ставим её и повторяем запрос."""
+    text = response.text or ""
+    if "hg-security=" not in text or "Verification" not in text:
+        return False
+    match = _HG_SECURITY_RE.search(text)
+    if not match:
+        return False
+    session.cookies.set("hg-security", match.group(1), domain="icetrade.by", path="/")
+    return True
+
+
 _extra_params_cache_by_profile_id: dict[str, dict[str, object]] | None = None  # keyed by env path string
 _logged_industry_mode: dict[str, bool] = {}
 _http_session: requests.Session | None = None
@@ -91,11 +106,22 @@ class IcetradeFetchLock:
                 self._fh.flush()
                 return True
             except FileExistsError:
-                # stale lock > 45 мин — снять
+                # stale lock > 45 мин или процесс-владелец уже умер — снять
                 try:
                     age = time.time() - os.path.getmtime(self.path)
-                    if age > 45 * 60:
-                        print(f"  ⚠️ Снимаем протухший lock ({age/60:.0f} мин): {self.path}")
+                    owner_dead = False
+                    with open(self.path, encoding="utf-8") as fh:
+                        pid_s = fh.read().split("\t", 1)[0].strip()
+                    if pid_s.isdigit():
+                        try:
+                            os.kill(int(pid_s), 0)
+                        except ProcessLookupError:
+                            owner_dead = True
+                        except PermissionError:
+                            owner_dead = False
+                    if age > 45 * 60 or owner_dead:
+                        why = "процесс завершился" if owner_dead else f"{age/60:.0f} мин"
+                        print(f"  ⚠️ Снимаем протухший lock ({why}): {self.path}")
                         os.remove(self.path)
                         continue
                 except OSError:
@@ -168,6 +194,94 @@ def _fetch_html_powershell(url: str, timeout: float) -> str:
     return html
 
 
+def _curl_cookie_file(script_dir: str) -> str:
+    path = os.path.join(script_dir, "logs", "icetrade.cookies")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
+def _fetch_html_curl(url: str, timeout: float, script_dir: str) -> str:
+    """curl, не requests: icetrade режет TLS-отпечаток Python (403), curl проходит JS-cookie."""
+    import subprocess
+
+    cookie_file = _curl_cookie_file(script_dir)
+    # Старый hg-security живёт ~120 с и после этого даёт 403. Каждый заход начинаем с чистой банки.
+    try:
+        os.remove(cookie_file)
+    except OSError:
+        pass
+    ua = HEADERS["User-Agent"]
+    sec = str(max(5, int(timeout)))
+
+    def run(extra: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "curl",
+                "-sk",
+                "--max-time",
+                sec,
+                "-A",
+                ua,
+                "-e",
+                BASE_URL + "/",
+                "-b",
+                cookie_file,
+                "-c",
+                cookie_file,
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout + 15,
+            check=False,
+        )
+
+    warm = run(["-o", "-", BASE_URL + "/"])
+    html_warm = warm.stdout or ""
+    match = _HG_SECURITY_RE.search(html_warm)
+    if match:
+        with open(cookie_file, "a", encoding="utf-8") as f:
+            f.write(f"icetrade.by\tFALSE\t/\tTRUE\t0\thg-security\t{match.group(1)}\n")
+    fetched = run(["-o", "-", "-w", "\n__HTTP_CODE__:%{http_code}", url])
+    if fetched.returncode != 0:
+        err = (fetched.stderr or "").strip() or f"curl exit {fetched.returncode}"
+        raise RuntimeError(err)
+    raw = fetched.stdout or ""
+    if "\n__HTTP_CODE__:" in raw:
+        html, _, code_s = raw.rpartition("\n__HTTP_CODE__:")
+        code = int(code_s.strip() or "0")
+    else:
+        html, code = raw, 200
+    if code >= 400:
+        raise RuntimeError(f"HTTP {code}")
+    if len(html) < 100:
+        raise RuntimeError("empty HTML from curl")
+    return html
+
+
+def _get_page_curl_fallback(
+    page_num: int, params: dict[str, object], timeout: float, script_dir: str
+) -> BeautifulSoup | None:
+    if os.environ.get("ICETRADE_NO_CURL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    if sys.platform == "win32":
+        return None
+    url = _search_url_with_params(params)
+    try:
+        html = _fetch_html_curl(url, timeout, script_dir)
+        blocked = _response_looks_blocked(200, html)
+        if blocked:
+            print(f"  ❌ curl fallback стр. {page_num}: {blocked}")
+            return None
+        print(f"  стр. {page_num} загружена (curl)")
+        return BeautifulSoup(html, "html.parser")
+    except Exception as e:
+        print(f"  ❌ curl fallback стр. {page_num}: {e}")
+        return None
+
+
 def _get_page_powershell_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
     if os.environ.get("ICETRADE_NO_POWERSHELL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
         return None
@@ -196,7 +310,9 @@ def get_http_session() -> requests.Session:
     s.headers.update(HEADERS)
     s.verify = False
     try:
-        s.get(BASE_URL + "/", timeout=_request_timeout())
+        warm = s.get(BASE_URL + "/", timeout=_request_timeout())
+        if _absorb_hg_security_challenge(s, warm):
+            s.get(BASE_URL + "/", timeout=_request_timeout())
     except Exception as e:
         print(f"  ⚠️ Прогрев {BASE_URL}/ не удался: {e}")
     _http_session = s
@@ -597,13 +713,32 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
     except RuntimeError as e:
         print(f"  ❌ {e}")
         return None
-    session = get_http_session()
     retries = _request_retries()
     timeout = _request_timeout()
     last_err = ""
+    prefer_curl = sys.platform != "win32" and os.environ.get(
+        "ICETRADE_NO_CURL_FALLBACK", ""
+    ).strip().lower() not in ("1", "true", "yes", "on")
+    session = None if prefer_curl else get_http_session()
     for attempt in range(retries):
+        if prefer_curl:
+            via_curl = _get_page_curl_fallback(page_num, params, timeout, rc.script_dir)
+            if via_curl is not None:
+                return via_curl
+            last_err = "curl не получил страницу"
+            if attempt + 1 < retries:
+                delay = min(20.0, 3.0 + attempt * 3.0)
+                print(
+                    f"  ⚠️ стр. {page_num}: {last_err}; повтор {attempt + 2}/{retries} через {delay:.0f}с"
+                )
+                time.sleep(delay)
+                continue
+            print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err}")
+            return None
         try:
             r = session.get(SEARCH_URL, params=params, timeout=timeout)
+            if _absorb_hg_security_challenge(session, r):
+                r = session.get(SEARCH_URL, params=params, timeout=timeout)
             blocked = _response_looks_blocked(r.status_code, r.text)
             if blocked:
                 last_err = blocked
@@ -678,6 +813,9 @@ def extract_tender_id(url: str | None) -> str | None:
     if not url:
         return None
     match = re.search(r"/view/(\d+)", url)
+    if match:
+        return match.group(1)
+    match = re.search(r"regNumber=(\d+)", url)
     return match.group(1) if match else None
 
 
