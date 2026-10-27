@@ -281,10 +281,97 @@ def resolve_bot_token(profile: IcetradeParserProfile) -> str:
     return (v or _DEFAULT_BOT_TOKEN_FALLBACK).strip()
 
 
-def resolve_chat_id(profile: IcetradeParserProfile) -> str:
+# Группа белорусских ангаров. Не совпадает с Sales/IT (_DEFAULT_CHAT_ID_FALLBACK).
+_ANGAR_GROUP_TITLE = "Sales/Ангары"
+_ANGAR_CHAT_ID_CACHE = "angar_telegram_chat_id.txt"
+
+
+def _telegram_api(bot_token: str, method: str, **params: object) -> dict:
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        resp = requests.post(url, data=params, timeout=20)
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def telegram_chat_title(bot_token: str, chat_id: str) -> str:
+    data = _telegram_api(bot_token, "getChat", chat_id=chat_id)
+    result = data.get("result") if data.get("ok") else None
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("title") or "").strip()
+
+
+def _angar_chat_id_cache_path(script_dir: str) -> str:
+    return os.path.join(script_dir, _ANGAR_CHAT_ID_CACHE)
+
+
+def _read_angar_chat_id_cache(script_dir: str) -> str:
+    path = _angar_chat_id_cache_path(script_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _write_angar_chat_id_cache(script_dir: str, chat_id: str) -> None:
+    path = _angar_chat_id_cache_path(script_dir)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(chat_id.strip() + "\n")
+    except OSError:
+        pass
+
+
+def _chat_id_from_update(update: dict) -> tuple[str, str]:
+    for key in ("message", "edited_message", "channel_post", "my_chat_member", "chat_member"):
+        obj = update.get(key) or {}
+        if not isinstance(obj, dict):
+            continue
+        chat = obj.get("chat") or {}
+        if isinstance(chat, dict) and chat.get("id") is not None:
+            return str(chat.get("id")), str(chat.get("title") or "").strip()
+    return "", ""
+
+
+def discover_chat_id_by_title(bot_token: str, title: str) -> str:
+    """Ищет chat.id среди ещё не подтверждённых апдейтов бота (добавление в группу, /start)."""
+    data = _telegram_api(
+        bot_token,
+        "getUpdates",
+        limit=100,
+        allowed_updates=json.dumps(["message", "my_chat_member", "chat_member"]),
+    )
+    if not data.get("ok"):
+        return ""
+    found = ""
+    for update in data.get("result") or []:
+        if not isinstance(update, dict):
+            continue
+        chat_id, chat_title = _chat_id_from_update(update)
+        if chat_id and chat_title == title:
+            found = chat_id
+    return found
+
+
+def resolve_chat_id(profile: IcetradeParserProfile, script_dir: str = "") -> str:
     if profile.id == "angar":
-        v = _env_first("ANGAR_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "CHAT_ID")
-        return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+        v = _env_first("ANGAR_TELEGRAM_CHAT_ID")
+        if v:
+            return v
+        if script_dir:
+            cached = _read_angar_chat_id_cache(script_dir)
+            if cached:
+                return cached
+            token = resolve_bot_token(profile)
+            found = discover_chat_id_by_title(token, _ANGAR_GROUP_TITLE)
+            if found:
+                _write_angar_chat_id_cache(script_dir, found)
+                return found
+        return ""
     if profile.id == "equipment":
         return _env_first("EQUIPMENT_TELEGRAM_CHAT_ID")
     v = _env_first("TELEGRAM_CHAT_ID", "CHAT_ID")
@@ -1206,7 +1293,23 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     _extra_params_cache_by_profile_id = None
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)
-    chat = resolve_chat_id(profile)
+    chat = resolve_chat_id(profile, script_dir)
+    if profile.id == "angar":
+        if not chat:
+            print(
+                "❌ Для профиля angar нужен числовой id группы Sales/Ангары "
+                "(ANGAR_TELEGRAM_CHAT_ID). Чат Sales/IT не используется. "
+                "Бот уже должен состоять в группе; напишите там /start@KoliyaGS_bot "
+                "и запустите парсер ещё раз — id сохранится в angar_telegram_chat_id.txt."
+            )
+            sys.exit(1)
+        title = telegram_chat_title(bot, chat)
+        if title != _ANGAR_GROUP_TITLE:
+            print(
+                f"❌ ANGAR_TELEGRAM_CHAT_ID={chat} — это «{title or 'чат недоступен'}», "
+                f"ожидается группа «{_ANGAR_GROUP_TITLE}». В Sales/IT ангары не отправляются."
+            )
+            sys.exit(1)
     if profile.id == "equipment" and not chat:
         print(
             "❌ Для профиля equipment задайте EQUIPMENT_TELEGRAM_CHAT_ID "
