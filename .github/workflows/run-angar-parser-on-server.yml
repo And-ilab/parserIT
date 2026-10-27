@@ -56,10 +56,16 @@ jobs:
             python -m pip install -q -r requirements.txt
           }
 
+      # Пустой секрет не блокирует C:\tender_it\.env и angar_telegram_chat_id.txt.
       - name: Run angar_parser.py
+        env:
+          ANGAR_TELEGRAM_CHAT_ID: ${{ secrets.ANGAR_TELEGRAM_CHAT_ID }}
+          ANGAR_TELEGRAM_BOT_TOKEN: ${{ secrets.ANGAR_TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           python angar_parser.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Log schedule completion (UTC) on server
         if: always()

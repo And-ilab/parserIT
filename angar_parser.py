@@ -2,7 +2,8 @@
 Парсер icetrade.by → Telegram: ангары и родственная номенклатура.
 
 Тот же код запросов и отправки в Telegram, что и у ИТ (`icetrade_parser_core`), но своё семантическое ядро
-и чёрный список. Рубрикатор icetrade **по умолчанию не используется** — отбор ключевыми словами по всей выдаче;
+и чёрный список. Сообщения идут только в группу Sales/Ангары (`ANGAR_TELEGRAM_CHAT_ID`), не в Sales/IT.
+Рубрикатор icetrade **по умолчанию не используется** — отбор ключевыми словами по всей выдаче;
 позже см. env.example (`ANGAR_ICETRADE_INDUSTRIES`).
 """
 from icetrade_parser_core import IcetradeParserProfile, cli_main
