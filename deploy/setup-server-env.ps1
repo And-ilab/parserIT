@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $BotToken,
     [string] $EquipmentChatId = "-5141347518",
-    [string] $AngarChatId = "",
+    [string] $AngarChatId = "-5527829938",
     [string] $RepoPath = "C:\tender_it"
 )
 

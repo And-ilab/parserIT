@@ -283,6 +283,7 @@ def resolve_bot_token(profile: IcetradeParserProfile) -> str:
 
 # Группа белорусских ангаров. Не совпадает с Sales/IT (_DEFAULT_CHAT_ID_FALLBACK).
 _ANGAR_GROUP_TITLE = "Sales/Ангары"
+_DEFAULT_ANGAR_CHAT_ID = "-5527829938"
 _ANGAR_CHAT_ID_CACHE = "angar_telegram_chat_id.txt"
 
 
@@ -362,6 +363,8 @@ def resolve_chat_id(profile: IcetradeParserProfile, script_dir: str = "") -> str
         v = _env_first("ANGAR_TELEGRAM_CHAT_ID")
         if v:
             return v
+        if _DEFAULT_ANGAR_CHAT_ID:
+            return _DEFAULT_ANGAR_CHAT_ID
         if script_dir:
             cached = _read_angar_chat_id_cache(script_dir)
             if cached:
