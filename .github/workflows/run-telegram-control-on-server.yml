@@ -1,0 +1,42 @@
+# Опрос команд /help /core /prompt и недельная сводка.
+# Сводка за прошлую неделю — по вторникам, один раз, в окне 9:00–18:00 Минск, в чат профиля.
+name: Telegram parser commands
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: powershell
+
+env:
+  TENDER_IT_DIR: 'C:\tender_it'
+
+jobs:
+  commands:
+    runs-on: self-hosted
+    steps:
+      - name: Git pull main
+        env:
+          GH_PULL_PAT: ${{ secrets.GH_PULL_PAT }}
+        run: |
+          if (-not (Test-Path -LiteralPath $env:TENDER_IT_DIR)) {
+            Write-Error "Directory missing: $($env:TENDER_IT_DIR)"
+          }
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          $sd = (Get-Location).Path
+          $opt = "safe.directory=$sd"
+          if ($env:GH_PULL_PAT -and $env:GH_PULL_PAT.Trim().Length -gt 0) {
+            $u = "https://x-access-token:$($env:GH_PULL_PAT)@github.com/${{ github.repository }}.git"
+            git -c $opt remote set-url origin $u
+          }
+          git -c $opt fetch origin
+          git -c $opt checkout main
+          git -c $opt pull origin main
+
+      - name: Run telegram_control.py
+        run: |
+          Set-Location -LiteralPath $env:TENDER_IT_DIR
+          python telegram_control.py

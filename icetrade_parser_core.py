@@ -5,7 +5,9 @@
 и чёрным списком. Рубрикатор опционально: ICETRADE_INDUSTRIES / icetrade_industry_params.json.
 
 Профиль ангаров (id «angar»): рубрикатор по умолчанию не подставляется — запрос идёт без industries,
-список тендеров сужается только ключевыми словами и чёрным списком. Позже рубрикатор можно включить
+список тендеров сужается ключевыми словами, чёрным списком и (если задан DEEPSEEK_API_KEY)
+проверкой релевантности через DeepSeek. Тот же гибрид включён у профилей it и equipment.
+Позже рубрикатор можно включить
 через ANGAR_ICETRADE_INDUSTRIES или icetrade_industry_params_angar.json.
 
 Изначально: логика it_parser.py + совместимые параметры формы запроса (исправление устаревшего ParserAngar).
@@ -261,6 +263,13 @@ class IcetradeParserProfile:
     # Мягкий стоп-лист: срабатывает только если в заголовке нет «сильного» корня (см. keywords_strong_roots).
     blacklist_soft: tuple[str, ...] = ()
     keywords_strong_roots: tuple[str, ...] = ()
+    # Корень → символы сразу после него, при которых совпадение ложное («навес» + «н» = «навесное»).
+    keyword_false_suffixes: tuple[tuple[str, str], ...] = ()
+    # Гибрид: после семантики отсечь спам моделью DeepSeek (ключ DEEPSEEK_API_KEY).
+    ai_filter: bool = False
+    ai_relevance_brief: str = ""
+    # Текст, который можно смотреть и менять командами. Пустой — берётся общий шаблон ниже.
+    ai_system_prompt: str = ""
 
 
 def _env_first(*names: str) -> str:
@@ -681,10 +690,25 @@ def extract_tender_id(url: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def matches_roots(title: str, roots: tuple[str, ...]) -> bool:
+def matches_roots(
+    title: str,
+    roots: tuple[str, ...],
+    *,
+    false_suffixes: tuple[tuple[str, str], ...] = (),
+) -> bool:
     title_lower = title.lower()
+    guards = {root: set(suffixes) for root, suffixes in false_suffixes}
     for root in roots:
-        if root in title_lower:
+        blocked = guards.get(root)
+        start = 0
+        while True:
+            i = title_lower.find(root, start)
+            if i < 0:
+                break
+            after = title_lower[i + len(root) : i + len(root) + 1]
+            if blocked and after and after in blocked:
+                start = i + 1
+                continue
             return True
     return False
 
@@ -907,7 +931,11 @@ def parse_tenders(soup: BeautifulSoup, profile: IcetradeParserProfile):
         if not link_tag:
             continue
         title = link_tag.get_text(strip=True)
-        if not matches_roots(title, profile.keywords_roots):
+        if not matches_roots(
+            title,
+            profile.keywords_roots,
+            false_suffixes=profile.keyword_false_suffixes,
+        ):
             continue
         if is_blacklisted(
             title,
@@ -933,6 +961,96 @@ def parse_tenders(soup: BeautifulSoup, profile: IcetradeParserProfile):
             }
         )
     return tenders
+
+
+_DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+_DEEPSEEK_MODEL = "deepseek-chat"
+
+
+def _ai_filter_enabled(profile: IcetradeParserProfile) -> bool:
+    if not profile.ai_filter:
+        return False
+    per_profile = f"{profile.id.upper()}_AI_FILTER"
+    flag = os.environ.get(per_profile, os.environ.get("AI_FILTER", "1")).strip().lower()
+    if flag in ("0", "off", "false", "no"):
+        return False
+    return bool(_env_first("DEEPSEEK_API_KEY"))
+
+
+def _deepseek_keep_indices(brief: str, titles: list[str]) -> set[int] | None:
+    """Индексы (1-based) релевантных заголовков. None — API не ответил, фильтр не применяем."""
+    key = _env_first("DEEPSEEK_API_KEY")
+    if not key or not titles:
+        return None
+    numbered = "\n".join(f"{i}. {title}" for i, title in enumerate(titles, 1))
+    system = (brief or "").strip()
+    if not system:
+        system = (
+            "Ты отсекаешь спам в закупках. Оставь только лоты по теме профиля.\n"
+            "Не релевантны попутные упоминания темы в надзоре, ПСД и чужой номенклатуре."
+        )
+    system += "\n" + (
+        'Верни только JSON {"keep": [номера релевантных пунктов]}. '
+        "Если ничего не подходит — {\"keep\": []}."
+    )
+    payload = {
+        "model": os.environ.get("DEEPSEEK_MODEL", _DEEPSEEK_MODEL).strip() or _DEEPSEEK_MODEL,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": numbered},
+        ],
+    }
+    try:
+        r = requests.post(
+            _DEEPSEEK_URL,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
+        if not r.ok:
+            print(f"  ⚠️ DeepSeek HTTP {r.status_code}: {r.text[:300]}")
+            return None
+        content = r.json()["choices"][0]["message"]["content"]
+        data = json.loads(content)
+        keep = data.get("keep", [])
+        if not isinstance(keep, list):
+            return None
+        out: set[int] = set()
+        for item in keep:
+            n = int(item)
+            if 1 <= n <= len(titles):
+                out.add(n)
+        return out
+    except Exception as e:
+        print(f"  ⚠️ DeepSeek недоступен ({type(e).__name__}: {e}) — оставляем семантический отбор")
+        return None
+
+
+def filter_tenders_with_ai(profile: IcetradeParserProfile, tenders: list[dict]) -> list[dict]:
+    if not tenders or not _ai_filter_enabled(profile):
+        if profile.ai_filter and tenders and not _env_first("DEEPSEEK_API_KEY"):
+            print(f"  ⚠️ DEEPSEEK_API_KEY не задан — AI-фильтр профиля {profile.id} пропущен")
+        return tenders
+    batch = 25
+    kept: list[dict] = []
+    dropped = 0
+    for offset in range(0, len(tenders), batch):
+        chunk = tenders[offset : offset + batch]
+        titles = [t.get("title") or "" for t in chunk]
+        keep = _deepseek_keep_indices(profile.ai_system_prompt or profile.ai_relevance_brief, titles)
+        if keep is None:
+            kept.extend(chunk)
+            continue
+        for i, t in enumerate(chunk, 1):
+            if i in keep:
+                kept.append(t)
+            else:
+                dropped += 1
+                print(f"  🤖 AI отсёк: {(t.get('title') or '')[:80]}")
+    print(f"🤖 AI-фильтр: оставлено {len(kept)}, отсеяно {dropped}")
+    return kept
 
 
 def run_parser_cycle(
@@ -1053,7 +1171,27 @@ def _run_parser_cycle_locked(
 
         time.sleep(random.uniform(3.5, 6.0))
 
+    before_ai_list = list(all_new_tenders)
+    before_ai = len(before_ai_list)
+    all_new_tenders = filter_tenders_with_ai(profile, all_new_tenders)
+    if pages_ok:
+        kept_ids = {id(t) for t in all_new_tenders}
+        rejected = [t for t in before_ai_list if id(t) not in kept_ids]
+        try:
+            from parser_controls import record_week_stats
+
+            record_week_stats(
+                rc.script_dir,
+                profile.id,
+                semantic=before_ai,
+                rejected=rejected,
+                sent=all_new_tenders,
+            )
+        except OSError as e:
+            print(f"  ⚠️ Не записал недельную статистику: {e}")
     xfer_new = len(all_new_tenders)
+    if before_ai != xfer_new:
+        print(f"\n📊 После семантики: {before_ai}; после AI: {xfer_new}")
     print(f"\n📊 ИТОГО новых ({profile.tmpl_done_count_label}): {xfer_new}")
 
     # Сбой сети/WAF на первой же странице — не врать «тендеров нет».
@@ -1203,6 +1341,9 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     _load_dotenv_if_present(script_dir)
+    from parser_controls import apply_controls
+
+    profile = apply_controls(profile, script_dir)
     _extra_params_cache_by_profile_id = None
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)

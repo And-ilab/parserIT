@@ -6,6 +6,9 @@ icetrade_industry_params.json
 icetrade_industry_params_angar.json
 icetrade_industry_params_equipment.json
 sent_equipment_ids.txt
+parser_controls.json
+parser_controls_offset.txt
+parser_weekly_stats.json
 
 # Журнал запусков/отправок (создаётся локально или на сервере)
 logs/

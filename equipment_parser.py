@@ -309,6 +309,11 @@ EQUIPMENT_PROFILE = IcetradeParserProfile(
     tmpl_run_title="Парсер станков и технологического оборудования запущен",
     tmpl_done_count_label="тендеров (оборудование)",
     telegram_mention_env="EQUIPMENT_TELEGRAM_MENTION",
+    ai_filter=True,
+    ai_system_prompt=(
+        "Оставь закупки станков, обрабатывающих центров, производственных линий "
+        "и технологического оборудования. Не релевантны стройка, мебель, канцелярия и программы работ."
+    ),
 )
 
 
