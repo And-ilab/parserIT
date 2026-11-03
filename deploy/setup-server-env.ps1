@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $BotToken,
     [string] $EquipmentChatId = "-5141347518",
+    [string] $AngarChatId = "-5527829938",
     [string] $RepoPath = "C:\tender_it"
 )
 
@@ -16,6 +17,9 @@ $lines = @(
     "EQUIPMENT_TELEGRAM_CHAT_ID=$EquipmentChatId"
     "EQUIPMENT_TELEGRAM_BOT_TOKEN=$BotToken"
 )
+if ($AngarChatId.Trim().Length -gt 0) {
+    $lines += "ANGAR_TELEGRAM_CHAT_ID=$($AngarChatId.Trim())"
+}
 $utf8 = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllLines($envPath, $lines, $utf8)
 Write-Host "Written: $envPath"
