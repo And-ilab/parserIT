@@ -267,6 +267,8 @@ class IcetradeParserProfile:
     # Гибрид: после семантики отсечь спам моделью DeepSeek (ключ DEEPSEEK_API_KEY).
     ai_filter: bool = False
     ai_relevance_brief: str = ""
+    # Текст, который можно смотреть и менять командами. Пустой — берётся общий шаблон ниже.
+    ai_system_prompt: str = ""
 
 
 def _env_first(*names: str) -> str:
@@ -979,18 +981,16 @@ def _deepseek_keep_indices(brief: str, titles: list[str]) -> set[int] | None:
     if not key or not titles:
         return None
     numbered = "\n".join(f"{i}. {title}" for i, title in enumerate(titles, 1))
-    system = (
-        "Ты отсекаешь спам в закупках. Релевантна закупка, поставка, аренда, монтаж или "
-        "строительство именно таких объектов: ангар, тентовый/каркасно-тентовый павильон, "
-        "пневмокаркас, быстровозводимое или сборно-разборное здание-ангар/склад/укрытие, "
-        "навес для техники, сельхозмашин или хранения, рампа как часть такого сооружения.\n"
-        "Не релевантно: навесное оборудование и оснастка машин, программные и мебельные «модули», "
-        "медтехника, дорожные и пандусные рампы, технадзор, ПСД и реконструкция, где ангар или "
-        "навес лишь попутно упомянуты в скобках или в адресе более крупного объекта.\n"
-        "Верни только JSON {\"keep\": [номера релевантных пунктов]}. Если ничего не подходит — {\"keep\": []}."
+    system = (brief or "").strip()
+    if not system:
+        system = (
+            "Ты отсекаешь спам в закупках. Оставь только лоты по теме профиля.\n"
+            "Не релевантны попутные упоминания темы в надзоре, ПСД и чужой номенклатуре."
+        )
+    system += "\n" + (
+        'Верни только JSON {"keep": [номера релевантных пунктов]}. '
+        "Если ничего не подходит — {\"keep\": []}."
     )
-    if brief.strip():
-        system += "\nУточнение профиля: " + brief.strip()
     payload = {
         "model": os.environ.get("DEEPSEEK_MODEL", _DEEPSEEK_MODEL).strip() or _DEEPSEEK_MODEL,
         "temperature": 0,
@@ -1037,7 +1037,7 @@ def filter_tenders_with_ai(profile: IcetradeParserProfile, tenders: list[dict]) 
     for offset in range(0, len(tenders), batch):
         chunk = tenders[offset : offset + batch]
         titles = [t.get("title") or "" for t in chunk]
-        keep = _deepseek_keep_indices(profile.ai_relevance_brief, titles)
+        keep = _deepseek_keep_indices(profile.ai_system_prompt or profile.ai_relevance_brief, titles)
         if keep is None:
             kept.extend(chunk)
             continue
@@ -1169,8 +1169,24 @@ def _run_parser_cycle_locked(
 
         time.sleep(random.uniform(3.5, 6.0))
 
-    before_ai = len(all_new_tenders)
+    before_ai_list = list(all_new_tenders)
+    before_ai = len(before_ai_list)
     all_new_tenders = filter_tenders_with_ai(profile, all_new_tenders)
+    if pages_ok:
+        kept_ids = {id(t) for t in all_new_tenders}
+        rejected = [t for t in before_ai_list if id(t) not in kept_ids]
+        try:
+            from parser_controls import record_week_stats
+
+            record_week_stats(
+                rc.script_dir,
+                profile.id,
+                semantic=before_ai,
+                rejected=rejected,
+                sent=all_new_tenders,
+            )
+        except OSError as e:
+            print(f"  ⚠️ Не записал недельную статистику: {e}")
     xfer_new = len(all_new_tenders)
     if before_ai != xfer_new:
         print(f"\n📊 После семантики: {before_ai}; после AI: {xfer_new}")
@@ -1323,6 +1339,9 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     _load_dotenv_if_present(script_dir)
+    from parser_controls import apply_controls
+
+    profile = apply_controls(profile, script_dir)
     _extra_params_cache_by_profile_id = None
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)
