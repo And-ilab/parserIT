@@ -57,6 +57,9 @@ jobs:
           }
 
       - name: Run angar_parser.py
+        env:
+          # Пустой секрет не затирает DEEPSEEK_API_KEY из C:\tender_it\.env
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           Set-Location -LiteralPath $env:TENDER_IT_DIR
           python angar_parser.py

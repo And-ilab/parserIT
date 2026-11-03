@@ -2,8 +2,9 @@
 Парсер icetrade.by → Telegram: ангары и родственная номенклатура.
 
 Тот же код запросов и отправки в Telegram, что и у ИТ (`icetrade_parser_core`), но своё семантическое ядро
-и чёрный список. Рубрикатор icetrade **по умолчанию не используется** — отбор ключевыми словами по всей выдаче;
-позже см. env.example (`ANGAR_ICETRADE_INDUSTRIES`).
+и чёрный список. Рубрикатор icetrade **по умолчанию не используется** — отбор ключевыми словами по всей выдаче,
+затем DeepSeek отсекает ложные совпадения (корень «навес» в «навесном оборудовании», надзор, где навес лишь в скобках).
+Ключ: `DEEPSEEK_API_KEY` в `.env`. Позже см. env.example (`ANGAR_ICETRADE_INDUSTRIES`).
 """
 from icetrade_parser_core import IcetradeParserProfile, cli_main
 
@@ -47,6 +48,14 @@ ANGAR_PROFILE = IcetradeParserProfile(
     tmpl_done_count_label="тендеров по ангарам",
     telegram_mention_env="ANGAR_TELEGRAM_MENTION",
     telegram_append_keyword_roots_footer=True,
+    keyword_false_suffixes=(("навес", "н"),),
+    ai_filter=True,
+    ai_relevance_brief=(
+        "Нужны ангары, тентовые и каркасно-тентовые сооружения, пневмокаркасы, "
+        "быстровозводимые и сборные укрытия, навесы для сельхозтехники и складирования, рампы у таких зданий. "
+        "Закупка услуг надзора, проектирования и реконструкции другого объекта — не наш лот, "
+        "даже если в названии есть слово «навес» или «ангар»."
+    ),
 )
 
 
