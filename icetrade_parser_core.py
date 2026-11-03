@@ -969,8 +969,9 @@ _DEEPSEEK_MODEL = "deepseek-chat"
 def _ai_filter_enabled(profile: IcetradeParserProfile) -> bool:
     if not profile.ai_filter:
         return False
-    flag = os.environ.get("ANGAR_AI_FILTER", "1").strip().lower()
-    if profile.id == "angar" and flag in ("0", "off", "false", "no"):
+    per_profile = f"{profile.id.upper()}_AI_FILTER"
+    flag = os.environ.get(per_profile, os.environ.get("AI_FILTER", "1")).strip().lower()
+    if flag in ("0", "off", "false", "no"):
         return False
     return bool(_env_first("DEEPSEEK_API_KEY"))
 
@@ -1029,7 +1030,7 @@ def _deepseek_keep_indices(brief: str, titles: list[str]) -> set[int] | None:
 def filter_tenders_with_ai(profile: IcetradeParserProfile, tenders: list[dict]) -> list[dict]:
     if not tenders or not _ai_filter_enabled(profile):
         if profile.ai_filter and tenders and not _env_first("DEEPSEEK_API_KEY"):
-            print("  ⚠️ DEEPSEEK_API_KEY не задан — AI-фильтр ангаров пропущен")
+            print(f"  ⚠️ DEEPSEEK_API_KEY не задан — AI-фильтр профиля {profile.id} пропущен")
         return tenders
     batch = 25
     kept: list[dict] = []
