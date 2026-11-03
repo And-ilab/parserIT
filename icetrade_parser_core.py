@@ -19,7 +19,9 @@ import math
 import os
 import random
 import re
+import shutil
 import sys
+import tempfile
 import time
 import traceback
 from dataclasses import dataclass
@@ -170,6 +172,112 @@ def _fetch_html_powershell(url: str, timeout: float) -> str:
     return html
 
 
+_browser_fallback_broken = False
+
+
+def _browser_binary() -> str:
+    """Chrome/Edge: тот же стек, что открывает icetrade в обычном окне, если requests режет WAF."""
+    if os.environ.get("ICETRADE_NO_BROWSER_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
+        return ""
+    explicit = os.environ.get("ICETRADE_BROWSER", "").strip()
+    candidates: list[str] = [explicit] if explicit else []
+    if sys.platform == "win32":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidates.extend(
+            [
+                os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(local, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            ]
+        )
+    else:
+        candidates.extend(
+            ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge"]
+        )
+    for cand in candidates:
+        if not cand:
+            continue
+        if os.path.isfile(cand):
+            return cand
+        found = shutil.which(cand)
+        if found:
+            return found
+    return ""
+
+
+def _fetch_html_browser(url: str, timeout: float) -> str:
+    global _browser_fallback_broken
+    binary = _browser_binary()
+    if not binary:
+        raise RuntimeError("Chrome/Edge не найден")
+    profile_dir = tempfile.mkdtemp(prefix="icetrade-browser-")
+    cmd = [
+        binary,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        f"--user-data-dir={profile_dir}",
+        "--virtual-time-budget=15000",
+        f"--timeout={max(5000, int(timeout * 1000))}",
+        "--dump-dom",
+        url,
+    ]
+    try:
+        r = subprocess_run_browser(cmd, timeout)
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    html = r.stdout or ""
+    if r.returncode != 0 and len(html) < 100:
+        err = (r.stderr or r.stdout or "").strip() or f"exit {r.returncode}"
+        _browser_fallback_broken = True
+        raise RuntimeError(err[:400])
+    if len(html) < 100:
+        _browser_fallback_broken = True
+        raise RuntimeError("empty HTML from browser")
+    return html
+
+
+def subprocess_run_browser(cmd: list[str], timeout: float):
+    import subprocess
+
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout + 20,
+        check=False,
+    )
+
+
+def _get_page_browser_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
+    global _browser_fallback_broken
+    if _browser_fallback_broken:
+        return None
+    if not _browser_binary():
+        return None
+    url = _search_url_with_params(params)
+    try:
+        html = _fetch_html_browser(url, timeout)
+        blocked = _response_looks_blocked(200, html)
+        if blocked:
+            print(f"  ❌ Браузер стр. {page_num}: {blocked}")
+            return None
+        print(f"  стр. {page_num} загружена (browser)")
+        return BeautifulSoup(html, "html.parser")
+    except Exception as e:
+        _browser_fallback_broken = True
+        print(f"  ❌ Браузер стр. {page_num}: {e}")
+        return None
+
+
 def _get_page_powershell_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
     if os.environ.get("ICETRADE_NO_POWERSHELL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
         return None
@@ -187,6 +295,14 @@ def _get_page_powershell_fallback(page_num: int, params: dict[str, object], time
     except Exception as e:
         print(f"  ❌ PowerShell fallback стр. {page_num}: {e}")
         return None
+
+
+def _alternate_page_fetch(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
+    """requests часто получает 403, пока тот же URL открывается в Chrome."""
+    fb = _get_page_powershell_fallback(page_num, params, timeout)
+    if fb is not None:
+        return fb
+    return _get_page_browser_fallback(page_num, params, timeout)
 
 
 def get_http_session() -> requests.Session:
@@ -664,6 +780,10 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
                 is_429 = r.status_code == 429 or "429" in blocked
                 if is_429:
                     _write_rate_limit_cooldown(rc.script_dir, _retry_after_seconds(r, attempt, True))
+                if r.status_code == 403 or "access denied" in blocked.lower():
+                    fb = _alternate_page_fetch(page_num, params, timeout)
+                    if fb is not None:
+                        return fb
                 if attempt + 1 < retries:
                     delay = _retry_after_seconds(r, attempt, is_429)
                     print(
@@ -677,7 +797,7 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
                         session = get_http_session()
                     continue
                 print(f"  ❌ Ошибка загрузки страницы {page_num}: {blocked}")
-                fb = _get_page_powershell_fallback(page_num, params, timeout)
+                fb = _alternate_page_fetch(page_num, params, timeout)
                 if fb is not None:
                     return fb
                 return None
@@ -694,18 +814,18 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
                 time.sleep(delay)
                 continue
             print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err}")
-            fb = _get_page_powershell_fallback(page_num, params, timeout)
+            fb = _alternate_page_fetch(page_num, params, timeout)
             if fb is not None:
                 return fb
             return None
         except Exception as e:
             print(f"  ❌ Ошибка загрузки страницы {page_num}: {e}")
-            fb = _get_page_powershell_fallback(page_num, params, timeout)
+            fb = _alternate_page_fetch(page_num, params, timeout)
             if fb is not None:
                 return fb
             return None
     print(f"  ❌ Ошибка загрузки страницы {page_num}: {last_err or 'unknown'}")
-    fb = _get_page_powershell_fallback(page_num, params, timeout)
+    fb = _alternate_page_fetch(page_num, params, timeout)
     if fb is not None:
         return fb
     return None
@@ -1250,9 +1370,9 @@ def _run_parser_cycle_locked(
             )
         err_msg = (
             f"⚠️ {mention}\n"
-            f"<b>Парсер [{profile.id}] не смог загрузить icetrade.by</b>\n"
-            f"Ошибка сети/доступа (часто <b>HTTP 429</b> rate-limit / 403/WAF). "
-            f"Лоты не проверялись.{rate_hint}"
+            f"<b>Парсер [{profile.id}] не смог скачать выдачу icetrade.by</b>\n"
+            f"HTTP-клиент получил отказ (часто <b>403/WAF</b> или <b>429</b>). "
+            f"В браузере сайт при этом может открываться. Лоты не проверялись.{rate_hint}"
         )
         telegram_warmup(rc.bot_token)
         send_telegram(rc.bot_token, rc.chat_id, err_msg, rc.telegram_send_retries)
