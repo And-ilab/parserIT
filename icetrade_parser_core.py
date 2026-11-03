@@ -290,14 +290,59 @@ def resolve_bot_token(profile: IcetradeParserProfile) -> str:
     return (v or _DEFAULT_BOT_TOKEN_FALLBACK).strip()
 
 
+# Белорусские ангары. Не совпадает с Sales/IT (_DEFAULT_CHAT_ID_FALLBACK).
+_ANGAR_GROUP_TITLE = "Sales/Ангары"
+_DEFAULT_ANGAR_CHAT_ID = "-5527829938"
+
+
+def telegram_chat_title(bot_token: str, chat_id: str) -> str:
+    if not bot_token or not chat_id:
+        return ""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{bot_token}/getChat",
+            data={"chat_id": chat_id},
+            timeout=20,
+        )
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return ""
+    result = data.get("result") if isinstance(data, dict) and data.get("ok") else None
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("title") or "").strip()
+
+
 def resolve_chat_id(profile: IcetradeParserProfile) -> str:
     if profile.id == "angar":
-        v = _env_first("ANGAR_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "CHAT_ID")
-        return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+        # TELEGRAM_CHAT_ID — чат ИТ. Подставлять его сюда нельзя: отчёт по ангарам
+        # оказывался в Sales/IT. Явный id, равный чату ИТ, тоже игнорируем.
+        v = _env_first("ANGAR_TELEGRAM_CHAT_ID")
+        if v and v != _DEFAULT_CHAT_ID_FALLBACK:
+            return v
+        return _DEFAULT_ANGAR_CHAT_ID
     if profile.id == "equipment":
         return _env_first("EQUIPMENT_TELEGRAM_CHAT_ID")
     v = _env_first("TELEGRAM_CHAT_ID", "CHAT_ID")
     return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+
+
+def angar_chat_refusal(bot_token: str, chat_id: str) -> str:
+    """Пустая строка, если chat_id — группа Sales/Ангары. Иначе текст, почему не шлём."""
+    if not chat_id:
+        return (
+            "Для профиля angar нужен числовой id группы Sales/Ангары "
+            "(ANGAR_TELEGRAM_CHAT_ID). Чат Sales/IT не используется."
+        )
+    if chat_id == _DEFAULT_CHAT_ID_FALLBACK:
+        return "Чат Sales/IT для ангаров запрещён."
+    title = telegram_chat_title(bot_token, chat_id)
+    if title != _ANGAR_GROUP_TITLE:
+        return (
+            f"ANGAR_TELEGRAM_CHAT_ID={chat_id} — это «{title or 'чат недоступен'}», "
+            f"ожидается группа «{_ANGAR_GROUP_TITLE}». В Sales/IT ангары не отправляются."
+        )
+    return ""
 
 
 def resolve_mention(profile: IcetradeParserProfile) -> str:
@@ -1348,6 +1393,11 @@ def cli_main(profile: IcetradeParserProfile) -> None:
     mention = resolve_mention(profile)
     bot = resolve_bot_token(profile)
     chat = resolve_chat_id(profile)
+    if profile.id == "angar":
+        refusal = angar_chat_refusal(bot, chat)
+        if refusal:
+            print(f"❌ {refusal}")
+            sys.exit(1)
     if profile.id == "equipment" and not chat:
         print(
             "❌ Для профиля equipment задайте EQUIPMENT_TELEGRAM_CHAT_ID "

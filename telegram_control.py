@@ -12,6 +12,7 @@ from angar_parser import ANGAR_PROFILE
 from equipment_parser import EQUIPMENT_PROFILE
 from icetrade_parser_core import (
     _load_dotenv_if_present,
+    angar_chat_refusal,
     resolve_bot_token,
     resolve_chat_id,
     send_telegram,
@@ -63,6 +64,9 @@ def _chats() -> dict[str, list]:
     for profile in PROFILES:
         chat = resolve_chat_id(profile)
         if not chat:
+            continue
+        if profile.id == "angar" and angar_chat_refusal(resolve_bot_token(profile), chat):
+            print(f"Пропускаю команды angar: чат {chat} не Sales/Ангары")
             continue
         found.setdefault(chat, []).append(profile)
     return found
@@ -248,6 +252,9 @@ def maybe_weekly(script_dir: str) -> None:
         chat = resolve_chat_id(profile)
         token = resolve_bot_token(profile)
         if not chat or not token:
+            continue
+        if profile.id == "angar" and angar_chat_refusal(token, chat):
+            print("Сводка angar не отправлена: чат не Sales/Ангары")
             continue
         if digest_already_sent(script_dir, profile.id, key):
             continue
