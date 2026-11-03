@@ -63,11 +63,10 @@ def parse_page(html: str) -> tuple[list[dict], int]:
             continue
         title = _block_labeled(block, "Объект закупки")
         customer = _block_labeled(block, "Заказчик")
-        haystack = f"{title} {customer}"
-        if not matches_roots(haystack, roots):
+        if not matches_roots(title, roots):
             continue
         if is_blacklisted(
-            haystack,
+            title,
             blacklist,
             blacklist_soft=blacklist_soft,
             keywords_strong_roots=strong,

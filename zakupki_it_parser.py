@@ -163,10 +163,11 @@ def parse_page(html: str) -> tuple[list[dict], int]:
             continue
         title = _block_labeled(block, "Объект закупки")
         customer = _block_labeled(block, "Заказчик")
-        haystack = f"{title} {customer}"
-        if not matches_roots(haystack, roots):
+        # Корень ищем только в объекте закупки. В названии заказчика часто есть
+        # «образовательные программы», и из-за этого в чат ИТ попадает еда.
+        if not matches_roots(title, roots):
             continue
-        if is_blacklisted(haystack, blacklist):
+        if is_blacklisted(title, blacklist):
             continue
         price, deadline = _price_and_deadline(block)
         url = href if href.startswith("http") else BASE + href

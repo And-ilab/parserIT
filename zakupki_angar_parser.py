@@ -61,14 +61,13 @@ def parse_page(html: str) -> tuple[list[dict], int]:
             continue
         title = _block_labeled(block, "Объект закупки")
         customer = _block_labeled(block, "Заказчик")
-        haystack = f"{title} {customer}"
         if not matches_roots(
-            haystack,
+            title,
             roots,
             false_suffixes=angar_parser.ANGAR_PROFILE.keyword_false_suffixes,
         ):
             continue
-        if is_blacklisted(haystack, blacklist):
+        if is_blacklisted(title, blacklist):
             continue
         price, deadline = _price_and_deadline(block)
         url = href if href.startswith("http") else "https://zakupki.gov.ru" + href
