@@ -1,0 +1,79 @@
+# ЕИС (zakupki.gov.ru) → группы Sales Россия: ИТ, ангары, оборудование.
+# Раньше скрипты жили только в невлитой ветке и не попадали в расписание main.
+# Self-hosted runner с сентября 2026 не забирает джобы (очередь → cancel через 24 ч),
+# поэтому этот workflow идёт на GitHub-hosted runner.
+#
+# Секреты (если нет — парсер берёт .env, на hosted его нет и шаг завершится ошибкой):
+#   ZAKUPKI_TELEGRAM_CHAT_ID, ZAKUPKI_ANGAR_TELEGRAM_CHAT_ID, ZAKUPKI_EQUIPMENT_TELEGRAM_CHAT_ID
+#   TELEGRAM_BOT_TOKEN или ZAKUPKI_TELEGRAM_BOT_TOKEN
+#   DEEPSEEK_API_KEY — необязательно, без него AI-фильтр пропускается
+
+name: Run zakupki parsers
+
+on:
+  schedule:
+    # ~03:30 и ~15:30 Минск
+    - cron: '30 0 * * *'
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parsers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: pip install
+        run: python -m pip install -q -r requirements.txt
+
+      - name: Restore sent ids
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sent_zakupki_it_ids.txt
+            sent_zakupki_angar_ids.txt
+            sent_zakupki_equipment_ids.txt
+          key: zakupki-sent-${{ github.run_id }}
+          restore-keys: zakupki-sent-
+
+      - name: Run parsers
+        env:
+          ZAKUPKI_TELEGRAM_CHAT_ID: ${{ secrets.ZAKUPKI_TELEGRAM_CHAT_ID }}
+          ZAKUPKI_ANGAR_TELEGRAM_CHAT_ID: ${{ secrets.ZAKUPKI_ANGAR_TELEGRAM_CHAT_ID }}
+          ZAKUPKI_EQUIPMENT_TELEGRAM_CHAT_ID: ${{ secrets.ZAKUPKI_EQUIPMENT_TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ZAKUPKI_TELEGRAM_BOT_TOKEN: ${{ secrets.ZAKUPKI_TELEGRAM_BOT_TOKEN }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ZAKUPKI_DAYS_BACK: '2'
+          ZAKUPKI_MAX_PAGES: '8'
+          ZAKUPKI_HTTP_TIMEOUT: '25'
+        run: |
+          set +e
+          fail=0
+          for script in zakupki_it_parser.py zakupki_angar_parser.py zakupki_equipment_parser.py; do
+            echo "===== $script ====="
+            python "$script"
+            code=$?
+            echo "exit $code"
+            if [ "$code" -ne 0 ]; then fail=1; fi
+          done
+          exit $fail
+
+      - name: Save sent ids
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sent_zakupki_it_ids.txt
+            sent_zakupki_angar_ids.txt
+            sent_zakupki_equipment_ids.txt
+          key: zakupki-sent-${{ github.run_id }}
