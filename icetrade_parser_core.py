@@ -170,6 +170,108 @@ def _fetch_html_powershell(url: str, timeout: float) -> str:
     return html
 
 
+_hg_cookie_jar: dict[str, str] = {}
+
+
+def _curl_bin() -> str | None:
+    if os.environ.get("ICETRADE_NO_CURL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    from shutil import which
+
+    return which("curl")
+
+
+def _update_hg_cookies(header_text: str, body: str) -> None:
+    """Сохранить cookie, которые страница Verification просит выставить перед повтором."""
+    for match in re.finditer(r"(?im)^set-cookie:\s*([^=;\s]+)=([^;\r\n]+)", header_text or ""):
+        name = match.group(1).strip()
+        if name.lower().startswith("hg-"):
+            _hg_cookie_jar[name] = match.group(2).strip()
+    inline = re.search(r"hg-security=([^;\"'\s]+)", body or "")
+    if inline:
+        _hg_cookie_jar["hg-security"] = inline.group(1)
+
+
+def _curl_get(url: str, timeout: float) -> tuple[int, str, str]:
+    import subprocess
+    import tempfile
+
+    bin_path = _curl_bin()
+    if not bin_path:
+        raise RuntimeError("curl not found")
+    sec = max(5, int(timeout))
+    with tempfile.TemporaryDirectory() as tmp:
+        header_path = os.path.join(tmp, "headers")
+        body_path = os.path.join(tmp, "body")
+        cmd = [
+            bin_path,
+            "-k",
+            "-sS",
+            "-L",
+            "--max-redirs",
+            "3",
+            "--max-time",
+            str(sec),
+            "-A",
+            HEADERS["User-Agent"],
+            "-H",
+            f"Accept: {HEADERS['Accept']}",
+            "-H",
+            f"Accept-Language: {HEADERS['Accept-Language']}",
+            "-D",
+            header_path,
+            "-o",
+            body_path,
+            url,
+        ]
+        if _hg_cookie_jar:
+            cookie = "; ".join(f"{name}={value}" for name, value in _hg_cookie_jar.items())
+            cmd.extend(["-H", f"Cookie: {cookie}"])
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip() or f"curl exit {proc.returncode}"
+            raise RuntimeError(err)
+        try:
+            with open(header_path, encoding="utf-8", errors="replace") as fh:
+                headers = fh.read()
+            with open(body_path, encoding="utf-8", errors="replace") as fh:
+                body = fh.read()
+        except OSError as e:
+            raise RuntimeError(str(e)) from e
+    status = 0
+    for line in headers.splitlines():
+        if line.startswith("HTTP/"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                status = int(parts[1])
+    return status, headers, body
+
+
+def _fetch_html_curl(url: str, timeout: float) -> str | None:
+    """Linux-загрузка: curl получает страницу Verification и повторяет запрос с её cookie."""
+    if not _curl_bin():
+        return None
+    try:
+        status, headers, body = _curl_get(url, timeout)
+    except RuntimeError as e:
+        print(f"  ⚠️ curl: {e}")
+        return None
+    _update_hg_cookies(headers, body)
+    if _response_looks_blocked(status, body) is None:
+        return body
+    if "hg-security" not in _hg_cookie_jar and "verification" not in (body or "").lower():
+        return None
+    try:
+        status, headers, body = _curl_get(url, timeout)
+    except RuntimeError as e:
+        print(f"  ⚠️ curl повтор: {e}")
+        return None
+    _update_hg_cookies(headers, body)
+    if _response_looks_blocked(status, body) is None:
+        return body
+    return None
+
+
 def _get_page_powershell_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
     if os.environ.get("ICETRADE_NO_POWERSHELL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
         return None
@@ -218,6 +320,8 @@ def _response_looks_blocked(status_code: int, text: str) -> str | None:
         return "страница Access denied"
     if "cf-browser-verification" in low or "just a moment" in low:
         return "Cloudflare challenge"
+    if "<title>verification</title>" in low or "hg-security=" in low:
+        return "страница Verification (cookie ещё не принята)"
     # Успешный поиск всегда содержит список аукционов (даже пустой).
     if "auctions-list" not in low and 'id="auctions"' not in low and "auctions_list" not in low:
         # короткие заглушки WAF часто без таблицы
@@ -639,6 +743,11 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
     session = get_http_session()
     retries = _request_retries()
     timeout = _request_timeout()
+    page_url = _search_url_with_params(params)
+    curl_html = _fetch_html_curl(page_url, timeout)
+    if curl_html:
+        print(f"  стр. {page_num} загружена (curl)")
+        return BeautifulSoup(curl_html, "html.parser")
     last_err = ""
     for attempt in range(retries):
         try:
