@@ -170,6 +170,108 @@ def _fetch_html_powershell(url: str, timeout: float) -> str:
     return html
 
 
+_hg_cookie_jar: dict[str, str] = {}
+
+
+def _curl_bin() -> str | None:
+    if os.environ.get("ICETRADE_NO_CURL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    from shutil import which
+
+    return which("curl")
+
+
+def _update_hg_cookies(header_text: str, body: str) -> None:
+    """Сохранить cookie, которые страница Verification просит выставить перед повтором."""
+    for match in re.finditer(r"(?im)^set-cookie:\s*([^=;\s]+)=([^;\r\n]+)", header_text or ""):
+        name = match.group(1).strip()
+        if name.lower().startswith("hg-"):
+            _hg_cookie_jar[name] = match.group(2).strip()
+    inline = re.search(r"hg-security=([^;\"'\s]+)", body or "")
+    if inline:
+        _hg_cookie_jar["hg-security"] = inline.group(1)
+
+
+def _curl_get(url: str, timeout: float) -> tuple[int, str, str]:
+    import subprocess
+    import tempfile
+
+    bin_path = _curl_bin()
+    if not bin_path:
+        raise RuntimeError("curl not found")
+    sec = max(5, int(timeout))
+    with tempfile.TemporaryDirectory() as tmp:
+        header_path = os.path.join(tmp, "headers")
+        body_path = os.path.join(tmp, "body")
+        cmd = [
+            bin_path,
+            "-k",
+            "-sS",
+            "-L",
+            "--max-redirs",
+            "3",
+            "--max-time",
+            str(sec),
+            "-A",
+            HEADERS["User-Agent"],
+            "-H",
+            f"Accept: {HEADERS['Accept']}",
+            "-H",
+            f"Accept-Language: {HEADERS['Accept-Language']}",
+            "-D",
+            header_path,
+            "-o",
+            body_path,
+            url,
+        ]
+        if _hg_cookie_jar:
+            cookie = "; ".join(f"{name}={value}" for name, value in _hg_cookie_jar.items())
+            cmd.extend(["-H", f"Cookie: {cookie}"])
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "").strip() or f"curl exit {proc.returncode}"
+            raise RuntimeError(err)
+        try:
+            with open(header_path, encoding="utf-8", errors="replace") as fh:
+                headers = fh.read()
+            with open(body_path, encoding="utf-8", errors="replace") as fh:
+                body = fh.read()
+        except OSError as e:
+            raise RuntimeError(str(e)) from e
+    status = 0
+    for line in headers.splitlines():
+        if line.startswith("HTTP/"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                status = int(parts[1])
+    return status, headers, body
+
+
+def _fetch_html_curl(url: str, timeout: float) -> str | None:
+    """Linux-загрузка: curl получает страницу Verification и повторяет запрос с её cookie."""
+    if not _curl_bin():
+        return None
+    try:
+        status, headers, body = _curl_get(url, timeout)
+    except RuntimeError as e:
+        print(f"  ⚠️ curl: {e}")
+        return None
+    _update_hg_cookies(headers, body)
+    if _response_looks_blocked(status, body) is None:
+        return body
+    if "hg-security" not in _hg_cookie_jar and "verification" not in (body or "").lower():
+        return None
+    try:
+        status, headers, body = _curl_get(url, timeout)
+    except RuntimeError as e:
+        print(f"  ⚠️ curl повтор: {e}")
+        return None
+    _update_hg_cookies(headers, body)
+    if _response_looks_blocked(status, body) is None:
+        return body
+    return None
+
+
 def _get_page_powershell_fallback(page_num: int, params: dict[str, object], timeout: float) -> BeautifulSoup | None:
     if os.environ.get("ICETRADE_NO_POWERSHELL_FALLBACK", "").strip().lower() in ("1", "true", "yes", "on"):
         return None
@@ -218,6 +320,8 @@ def _response_looks_blocked(status_code: int, text: str) -> str | None:
         return "страница Access denied"
     if "cf-browser-verification" in low or "just a moment" in low:
         return "Cloudflare challenge"
+    if "<title>verification</title>" in low or "hg-security=" in low:
+        return "страница Verification (cookie ещё не принята)"
     # Успешный поиск всегда содержит список аукционов (даже пустой).
     if "auctions-list" not in low and 'id="auctions"' not in low and "auctions_list" not in low:
         # короткие заглушки WAF часто без таблицы
@@ -292,8 +396,8 @@ def resolve_bot_token(profile: IcetradeParserProfile) -> str:
 
 def resolve_chat_id(profile: IcetradeParserProfile) -> str:
     if profile.id == "angar":
-        v = _env_first("ANGAR_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "CHAT_ID")
-        return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+        # Не подставлять чат ИТ: тендеры по ангарам идут только в свою группу.
+        return _env_first("ANGAR_TELEGRAM_CHAT_ID")
     if profile.id == "equipment":
         return _env_first("EQUIPMENT_TELEGRAM_CHAT_ID")
     v = _env_first("TELEGRAM_CHAT_ID", "CHAT_ID")
@@ -317,6 +421,8 @@ class RunnerConfig:
     telegram_send_retries: int
     telegram_safe_text_limit: int
     header_reserve: int
+    last_fetch_error: str = ""
+    fetch_skipped_cooldown: bool = False
 
 
 HEADER_RESERVE_DEFAULT = 280
@@ -564,6 +670,32 @@ def _write_rate_limit_cooldown(script_dir: str, seconds: float) -> None:
         print(f"  ⚠️ Не записали cooldown: {e}")
 
 
+def _fetch_alert_stamp_path(script_dir: str) -> str:
+    return os.path.join(script_dir, "logs", "icetrade_fetch_alert.txt")
+
+
+def _fetch_alert_recent(script_dir: str, kind: str, window_sec: float = 6 * 3600) -> bool:
+    """True, если такой же сбой уже уходил в Telegram в последние window_sec."""
+    path = _fetch_alert_stamp_path(script_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            ts_s, prev = f.read().strip().split("\t", 1)
+        ts = float(ts_s)
+    except (OSError, ValueError):
+        return False
+    return prev.strip() == kind and (time.time() - ts) < window_sec
+
+
+def _mark_fetch_alert(script_dir: str, kind: str) -> None:
+    path = _fetch_alert_stamp_path(script_dir)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{time.time():.0f}\t{kind}\n")
+    except OSError as e:
+        print(f"  ⚠️ Не записали stamp алерта: {e}")
+
+
 def _wait_rate_limit_cooldown(script_dir: str) -> None:
     until = _read_rate_limit_until(script_dir)
     now = time.time()
@@ -605,10 +737,17 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
         _wait_rate_limit_cooldown(rc.script_dir)
     except RuntimeError as e:
         print(f"  ❌ {e}")
+        rc.fetch_skipped_cooldown = True
+        rc.last_fetch_error = str(e)
         return None
     session = get_http_session()
     retries = _request_retries()
     timeout = _request_timeout()
+    page_url = _search_url_with_params(params)
+    curl_html = _fetch_html_curl(page_url, timeout)
+    if curl_html:
+        print(f"  стр. {page_num} загружена (curl)")
+        return BeautifulSoup(curl_html, "html.parser")
     last_err = ""
     for attempt in range(retries):
         try:
@@ -616,17 +755,24 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
             blocked = _response_looks_blocked(r.status_code, r.text)
             if blocked:
                 last_err = blocked
+                rc.last_fetch_error = blocked
                 is_429 = r.status_code == 429 or "429" in blocked
+                hard_deny = r.status_code == 403 or "access denied" in blocked.lower()
                 if is_429:
                     _write_rate_limit_cooldown(rc.script_dir, _retry_after_seconds(r, attempt, True))
+                # 403/Access denied с того же IP повторными сессиями не снимается — один сброс и стоп.
+                if hard_deny and attempt >= 1:
+                    print(f"  ❌ Ошибка загрузки страницы {page_num}: {blocked}")
+                    return None
                 if attempt + 1 < retries:
                     delay = _retry_after_seconds(r, attempt, is_429)
+                    if hard_deny:
+                        delay = min(delay, 20.0)
                     print(
                         f"  ⚠️ стр. {page_num}: {blocked}; повтор {attempt + 2}/{retries} через {delay:.0f}с"
                     )
                     time.sleep(delay)
-                    # Сессию сбрасываем только на жёсткий 403/Access denied (не на 429).
-                    if r.status_code == 403 or "access denied" in blocked.lower():
+                    if hard_deny:
                         global _http_session
                         _http_session = None
                         session = get_http_session()
@@ -641,6 +787,7 @@ def get_page(rc: RunnerConfig, page_num: int) -> BeautifulSoup | None:
             return BeautifulSoup(r.text, "html.parser")
         except requests.exceptions.RequestException as e:
             last_err = f"{type(e).__name__}: {e}"
+            rc.last_fetch_error = last_err
             if attempt + 1 < retries:
                 delay = min(90.0, (2 ** attempt) * 2 + random.uniform(1.0, 3.0))
                 print(
@@ -1202,6 +1349,33 @@ def _run_parser_cycle_locked(
 
     # Сбой сети/WAF на первой же странице — не врать «тендеров нет».
     if stopped_early_bad_page and pages_ok == 0:
+        detail = (rc.last_fetch_error or "неизвестная ошибка загрузки").strip()
+        if "429" in detail:
+            kind = "429"
+        elif "403" in detail or "access denied" in detail.lower() or "блок" in detail.lower():
+            kind = "403"
+        elif rc.fetch_skipped_cooldown:
+            kind = "cooldown"
+        else:
+            kind = "network"
+        if _fetch_alert_recent(rc.script_dir, kind):
+            print(
+                f"📭 Telegram-алерт «{kind}» уже отправляли за последние 6 ч "
+                f"({profile.id}: {detail[:180]}). Повтор в чат не шлём."
+            )
+            append_transfer_journal(
+                rc.script_dir,
+                "parser_cycle_summary",
+                profile=profile.id,
+                new_candidates=0,
+                stopped_early_bad_page=True,
+                pages_ok=0,
+                telegram_ok=False,
+                fetch_failed=True,
+                alert_suppressed=True,
+                fetch_error=detail[:300],
+            )
+            return False
         cooldown_left = max(0.0, _read_rate_limit_until(rc.script_dir) - time.time())
         rate_hint = ""
         if cooldown_left > 0:
@@ -1212,11 +1386,13 @@ def _run_parser_cycle_locked(
         err_msg = (
             f"⚠️ {mention}\n"
             f"<b>Парсер [{profile.id}] не смог загрузить icetrade.by</b>\n"
-            f"Ошибка сети/доступа (часто <b>HTTP 429</b> rate-limit / 403/WAF). "
-            f"Лоты не проверялись.{rate_hint}"
+            f"Причина: <b>{detail[:400]}</b>\n"
+            f"Лоты не проверялись. Следующие профили в ближайшие 6 ч не будут дублировать это сообщение."
+            f"{rate_hint}"
         )
         telegram_warmup(rc.bot_token)
         send_telegram(rc.bot_token, rc.chat_id, err_msg, rc.telegram_send_retries)
+        _mark_fetch_alert(rc.script_dir, kind)
         append_transfer_journal(
             rc.script_dir,
             "parser_cycle_summary",
@@ -1358,6 +1534,13 @@ def cli_main(profile: IcetradeParserProfile) -> None:
         print(
             "❌ Для профиля equipment задайте EQUIPMENT_TELEGRAM_CHAT_ID "
             "(числовой id группы; бот должен быть участником). "
+            "Ссылка-приглашение t.me/+… не подходит как chat_id."
+        )
+        sys.exit(1)
+    if profile.id == "angar" and not chat:
+        print(
+            "❌ Для профиля angar задайте ANGAR_TELEGRAM_CHAT_ID "
+            "(группа Sales/Ангары, не Sales/IT). "
             "Ссылка-приглашение t.me/+… не подходит как chat_id."
         )
         sys.exit(1)
