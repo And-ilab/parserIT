@@ -1,4 +1,5 @@
 # То же окружение, что и для ИТ (C:\tender_it, self-hosted Windows runner).
+# Telegram: группа Sales/Ангары, не Sales/IT.
 # Расписание: +1 ч после ИТ — ~01:00 и ~13:00 Минск (22:00 и 10:00 UTC). Оборудование: +1 ч после ангаров.
 #
 # Если нет schedule-run много дней: Actions → этот workflow может быть Disabled
