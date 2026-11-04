@@ -396,8 +396,8 @@ def resolve_bot_token(profile: IcetradeParserProfile) -> str:
 
 def resolve_chat_id(profile: IcetradeParserProfile) -> str:
     if profile.id == "angar":
-        v = _env_first("ANGAR_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID", "CHAT_ID")
-        return (v or _DEFAULT_CHAT_ID_FALLBACK).strip()
+        # Не подставлять чат ИТ: тендеры по ангарам идут только в свою группу.
+        return _env_first("ANGAR_TELEGRAM_CHAT_ID")
     if profile.id == "equipment":
         return _env_first("EQUIPMENT_TELEGRAM_CHAT_ID")
     v = _env_first("TELEGRAM_CHAT_ID", "CHAT_ID")
@@ -1534,6 +1534,13 @@ def cli_main(profile: IcetradeParserProfile) -> None:
         print(
             "❌ Для профиля equipment задайте EQUIPMENT_TELEGRAM_CHAT_ID "
             "(числовой id группы; бот должен быть участником). "
+            "Ссылка-приглашение t.me/+… не подходит как chat_id."
+        )
+        sys.exit(1)
+    if profile.id == "angar" and not chat:
+        print(
+            "❌ Для профиля angar задайте ANGAR_TELEGRAM_CHAT_ID "
+            "(группа Sales/Ангары, не Sales/IT). "
             "Ссылка-приглашение t.me/+… не подходит как chat_id."
         )
         sys.exit(1)
