@@ -21,7 +21,6 @@ from icetrade_parser_core import (
     _load_dotenv_if_present,
     append_transfer_journal,
     build_telegram_chunks,
-    extract_tender_id,
     is_blacklisted,
     load_sent_ids,
     filter_tenders_with_ai,
@@ -37,6 +36,8 @@ from zakupki_it_parser import (
     _int_env,
     _price_and_deadline,
     _search_url,
+    card_href,
+    eis_reg,
     icetrade_tee,
 )
 
@@ -52,13 +53,8 @@ def parse_page(html: str) -> tuple[list[dict], int]:
     blacklist_soft = tuple(equipment_parser.BLACKLIST_SOFT)
     strong = tuple(equipment_parser.KEYWORDS_STRONG)
     for block in blocks:
-        href = ""
-        for candidate in block.select("a[href*='regNumber=']"):
-            h = candidate.get("href") or ""
-            if "notice/" in h and "printForm" not in h and "view" in h:
-                href = h
-                break
-        reg = extract_tender_id(href)
+        href = card_href(block)
+        reg = eis_reg(href)
         if not reg or not href:
             continue
         title = _block_labeled(block, "Объект закупки")
@@ -144,7 +140,7 @@ def main() -> int:
         if n_blocks == 0:
             break
         for t in batch:
-            tid = extract_tender_id(t["url"])
+            tid = eis_reg(t["url"])
             if not tid or tid in sent or tid in seen:
                 continue
             seen.add(tid)

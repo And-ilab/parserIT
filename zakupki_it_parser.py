@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -26,7 +27,6 @@ from icetrade_parser_core import (
     _load_dotenv_if_present,
     append_transfer_journal,
     build_telegram_chunks,
-    extract_tender_id,
     is_blacklisted,
     load_sent_ids,
     matches_roots,
@@ -117,6 +117,32 @@ def _search_url(date_from: str, date_to: str, page: int) -> str:
     return SEARCH_URL + "?" + urlencode(params)
 
 
+def eis_reg(url: str | None) -> str | None:
+    """Реестровый номер ЕИС. Ссылки карточки — ?regNumber=, не icetrade /view/123."""
+    if not url:
+        return None
+    match = re.search(r"(?:regNumber|purchaseNoticeNumber)=(\d+)", url)
+    if match:
+        return match.group(1)
+    match = re.search(r"/view/(\d+)", url)
+    return match.group(1) if match else None
+
+
+def card_href(block) -> str:
+    best = ""
+    for anchor in block.select("a[href]"):
+        href = anchor.get("href") or ""
+        if "printForm" in href or "signview" in href:
+            continue
+        if "regNumber=" not in href and "purchaseNoticeNumber=" not in href:
+            continue
+        if "common-info" in href or ("notice/" in href and "view" in href):
+            return href
+        if not best:
+            best = href
+    return best
+
+
 def _block_labeled(block, title: str) -> str:
     for part in block.select(".registry-entry__body-block"):
         label = part.select_one(".registry-entry__body-title")
@@ -150,15 +176,8 @@ def parse_page(html: str) -> tuple[list[dict], int]:
     roots = tuple(it_parser.KEYWORDS_ROOTS)
     blacklist = tuple(it_parser.BLACKLIST)
     for block in blocks:
-        link = block.select_one("a[href*='regNumber=']")
-        href = (link.get("href") if link else "") or ""
-        if "notice/" not in href or "printForm" in href:
-            for candidate in block.select("a[href*='regNumber=']"):
-                h = candidate.get("href") or ""
-                if "notice/" in h and "printForm" not in h and "view" in h:
-                    href = h
-                    break
-        reg = extract_tender_id(href)
+        href = card_href(block)
+        reg = eis_reg(href)
         if not reg or not href:
             continue
         title = _block_labeled(block, "Объект закупки")
@@ -235,7 +254,7 @@ def main() -> int:
         if n_blocks == 0:
             break
         for t in batch:
-            tid = extract_tender_id(t["url"])
+            tid = eis_reg(t["url"])
             if not tid or tid in sent or tid in seen:
                 continue
             seen.add(tid)
