@@ -65,6 +65,15 @@ def _chats() -> dict[str, list]:
         if not chat:
             continue
         found.setdefault(chat, []).append(profile)
+    # Группы ЕИС пишут тем же ботом, но id заданы отдельно и раньше не слушались.
+    for env_name, profile in (
+        ("ZAKUPKI_TELEGRAM_CHAT_ID", IT_PROFILE),
+        ("ZAKUPKI_ANGAR_TELEGRAM_CHAT_ID", ANGAR_PROFILE),
+        ("ZAKUPKI_EQUIPMENT_TELEGRAM_CHAT_ID", EQUIPMENT_PROFILE),
+    ):
+        chat = os.environ.get(env_name, "").strip()
+        if chat and profile not in found.setdefault(chat, []):
+            found[chat].append(profile)
     return found
 
 
@@ -202,8 +211,11 @@ def poll_once(script_dir: str) -> None:
     tokens: list[str] = []
     for profile in PROFILES:
         token = resolve_bot_token(profile)
-        if token and resolve_chat_id(profile) and token not in tokens:
+        if token and token not in tokens:
             tokens.append(token)
+    zakupki_token = os.environ.get("ZAKUPKI_TELEGRAM_BOT_TOKEN", "").strip()
+    if zakupki_token and zakupki_token not in tokens:
+        tokens.append(zakupki_token)
     offsets = load_offsets(script_dir)
     for token in tokens:
         key = hashlib.sha256(token.encode()).hexdigest()[:12]
