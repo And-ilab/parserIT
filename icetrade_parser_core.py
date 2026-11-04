@@ -686,6 +686,9 @@ def save_sent_id(path: str, tender_id: str):
 def extract_tender_id(url: str | None) -> str | None:
     if not url:
         return None
+    match = re.search(r"(?:regNumber|purchaseNoticeNumber)=(\d+)", url)
+    if match:
+        return match.group(1)
     match = re.search(r"/view/(\d+)", url)
     return match.group(1) if match else None
 
