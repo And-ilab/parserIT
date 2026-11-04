@@ -36,21 +36,30 @@ from parser_controls import MINSK
 PROFILES = (IT_PROFILE, ANGAR_PROFILE, EQUIPMENT_PROFILE)
 IDS = {p.id: p for p in PROFILES}
 
-HELP = (
-    "<b>Команды</b>\n"
-    "/help — этот список\n"
-    "/core [it|angar|equipment] — семантическое ядро\n"
-    "/prompt [it|angar|equipment] — системный промпт\n"
-    "/core_add [профиль] корень — добавить корень\n"
-    "/core_del [профиль] корень — убрать корень\n"
-    "/prompt_set [профиль] текст — заменить промпт\n"
-    "/reset [профиль] core — ядро как в коде\n"
-    "/reset [профиль] prompt — промпт как в коде\n\n"
-    "Профиль можно не писать, если в этом чате он один. "
-    "Правки подхватит следующий запуск парсера. "
-    "По вторникам в рабочее время (Минск, 9:00–18:00) сюда один раз приходит сводка: "
-    "ядро, промпт, сколько прошло семантику, сколько отсеяно и отобрано и на какую сумму."
-)
+def help_text(chat_profiles: list) -> str:
+    """Команды с уже подставленным профилем этой группы."""
+    profiles = list(chat_profiles) or list(PROFILES)
+    blocks = []
+    for profile in profiles:
+        pid = profile.id
+        blocks.append(
+            f"<b>Команды {pid}</b>\n"
+            "/help — этот список\n"
+            f"/core {pid} — семантическое ядро\n"
+            f"/prompt {pid} — системный промпт\n"
+            f"/core_add {pid} корень — добавить корень\n"
+            f"/core_del {pid} корень — убрать корень\n"
+            f"/prompt_set {pid} текст — заменить промпт\n"
+            f"/reset {pid} core — ядро как в коде\n"
+            f"/reset {pid} prompt — промпт как в коде"
+        )
+    tail = (
+        "Профиль в командах уже подставлен для этой группы. "
+        "Правки подхватит следующий запуск парсера. "
+        "По вторникам в рабочее время (Минск, 9:00–18:00) сюда один раз приходит сводка: "
+        "ядро, промпт, сколько прошло семантику, сколько отсеяно и отобрано и на какую сумму."
+    )
+    return "\n\n".join(blocks) + "\n\n" + tail
 
 
 def _script_dir() -> str:
@@ -123,7 +132,7 @@ def handle_command(chat_profiles: list, text: str, script_dir: str) -> str:
     body = raw.split()[0].split("@", 1)[0].lower()
     rest = raw[len(raw.split()[0]) :].strip()
     if body == "/help":
-        return HELP
+        return help_text(chat_profiles)
     if body == "/core":
         profile, err = _resolve_profile(chat_profiles, rest.split()[0] if rest else "")
         if rest and rest.split()[0].lower() not in IDS and len(chat_profiles) != 1:
