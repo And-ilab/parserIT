@@ -915,6 +915,9 @@ def build_telegram_chunks(
         body = "".join(x["text"] for x in blist)
         ids = [x["id"] for x in blist if x["id"]]
         out.append((header + body, ids))
+    if out:
+        last_txt, last_ids = out[-1]
+        out[-1] = (last_txt + "\nУправление отбором: /help", last_ids)
     return out
 
 
